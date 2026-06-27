@@ -12,17 +12,24 @@ Two tests are implemented:
    For each drug state (Baseline, Nitro, Phen, Dobu) and each metric
    (AIC, TD, PP, HR, SmartPump, MAP), tests whether P3 and P6 measurements
    differ significantly across the 4-animal normal cohort.
-   Method: pool percent-change-from-baseline values across all 4 animals
-   separately for P3 and P6, then run an independent two-sample t-test.
+   Method: pool percent-change-from-own-p-level-baseline values across all
+   4 animals separately for P3 and P6, then run an independent two-sample
+   t-test. P6 measurements are normalized against P6 baseline mean; P3
+   measurements are normalized against P3 baseline mean. This ensures we
+   are testing whether P3 and P6 respond differently to drugs, not just
+   whether they start from different absolute values.
 
 2. Washout vs Baseline significance test
    For Washout1 (post-Nitro) and Washout2 (post-Phen) only — washouts
    following Dobu or Esmo are excluded since we only analyze up to Dobu.
    For each washout period and each metric (AIC, TD, PP, HR, SmartPump, MAP),
    tests whether the washout measurements differ significantly from baseline.
-   Method: for each animal compute percent-change-from-baseline for that
-   washout phase, pool those values across all 4 animals, run a one-sample
-   t-test against zero.
+   Method: for each animal compute percent-change-from-baseline (combined
+   P3+P6 baseline mean) for that washout phase, pool those values across
+   all 4 animals, run a one-sample t-test against zero.
+   Note: combined baseline mean is appropriate here since washout phases
+   are not split by P-level — we are testing whether the animal returned
+   to its overall baseline state.
 
 Results printed to console AND saved to a .txt file for reference.
 Decisions informed by these tests are baked directly into the pipeline
@@ -97,22 +104,43 @@ def _load_animal_summaries(processed_dir, animal_ids=NORMAL_COHORT_IDS):
     return data
 
 
-def _get_baseline_mean(df, metric):
+def _get_baseline_mean(df, metric, p_level=None):
     """
-    Return the grand mean of a metric across both baseline phases (P3 + P6).
-    Used as the reference value for percent-change computation.
+    Return the baseline mean for a given metric.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Per-animal phase-summary dataframe.
+    metric : str
+        Metric name (e.g. "AIC", "TD", "PP").
+    p_level : str or None
+        If provided (e.g. "P3" or "P6"), returns the baseline mean for that
+        specific P-level only. Used in the P3 vs P6 test so that each group
+        is normalized against its own baseline, not a combined mean.
+        If None, returns the combined mean across all baseline phases (P3 + P6
+        together). Used in the washout test where no P-level split is needed.
+
+    Returns
+    -------
+    float
     """
     baseline_rows = df[df["med"] == "Baseline"]
+    if p_level is not None:
+        baseline_rows = baseline_rows[baseline_rows["p_level"] == p_level]
     if baseline_rows.empty:
-        raise ValueError("No Baseline phase found in dataframe.")
+        raise ValueError(
+            f"No Baseline phase found for p_level={p_level!r}. "
+            f"Check that the data contains the expected P-level."
+        )
     return baseline_rows[f"{metric}_mean"].mean()
 
 
-def _pct_change_from_baseline(value, baseline_mean):
-    """Compute percent change from baseline."""
-    if baseline_mean == 0:
+def _pct_change(value, reference_mean):
+    """Compute percent change from a reference mean."""
+    if reference_mean == 0 or pd.isna(reference_mean):
         return np.nan
-    return ((value - baseline_mean) / baseline_mean) * 100
+    return ((value - reference_mean) / reference_mean) * 100
 
 
 def _get_washouts_in_scope(df):
@@ -146,6 +174,13 @@ def run_p3_p6_test(processed_dir):
     """
     Test whether P3 and P6 measurements differ significantly across
     drug states and metrics, pooled across all 4 normal-cohort animals.
+
+    Each P-level is normalized against its own baseline mean:
+      - P6 drug-state values normalized against P6 baseline mean
+      - P3 drug-state values normalized against P3 baseline mean
+
+    This tests whether P3 and P6 respond differently to the drug,
+    not merely whether they start from different absolute values.
     """
     print("\n" + "=" * 70)
     print("TEST 1: P3 vs P6 significance test")
@@ -153,6 +188,7 @@ def run_p3_p6_test(processed_dir):
     print(f"Drug states: {DRUG_STATES}")
     print(f"Metrics: {METRICS}")
     print(f"Alpha: {ALPHA}")
+    print("Normalization: each P-level normalized against its own baseline mean")
     print("=" * 70)
 
     animal_data = _load_animal_summaries(processed_dir)
@@ -165,16 +201,27 @@ def run_p3_p6_test(processed_dir):
             p3_values, p6_values = [], []
 
             for animal_id, df in animal_data.items():
-                baseline_mean = _get_baseline_mean(df, metric)
                 state_rows = df[df["med"] == drug_state]
 
                 for _, row in state_rows.iterrows():
                     if pd.isna(row[col]):
                         continue
-                    pct = _pct_change_from_baseline(row[col], baseline_mean)
-                    if row["p_level"] == "P3":
+
+                    p_level = row["p_level"]
+
+                    # Normalize against this P-level's own baseline mean
+                    try:
+                        baseline_mean = _get_baseline_mean(df, metric, p_level=p_level)
+                    except ValueError:
+                        continue
+
+                    pct = _pct_change(row[col], baseline_mean)
+                    if pd.isna(pct):
+                        continue
+
+                    if p_level == "P3":
                         p3_values.append(pct)
-                    elif row["p_level"] == "P6":
+                    elif p_level == "P6":
                         p6_values.append(pct)
 
             if len(p3_values) < 2 or len(p6_values) < 2:
@@ -209,6 +256,9 @@ def run_washout_test(processed_dir):
     Test whether Washout1 (post-Nitro) and Washout2 (post-Phen) differ
     significantly from baseline, pooled across all 4 normal-cohort animals.
 
+    Washout phases are not split by P-level, so normalization uses the
+    combined P3+P6 baseline mean per animal.
+
     Washouts following Dobu or Esmo are excluded — only the two washouts
     within the Baseline -> Nitro -> Washout -> Phen -> Washout -> Dobu
     protocol window are tested.
@@ -220,6 +270,7 @@ def run_washout_test(processed_dir):
     print(f"Alpha: {ALPHA}")
     print("Note: only Washout1 (post-Nitro) and Washout2 (post-Phen) tested.")
     print("      Post-Dobu/Esmo washouts excluded.")
+    print("      Normalization: combined P3+P6 baseline mean per animal.")
     print("=" * 70)
 
     animal_data = _load_animal_summaries(processed_dir)
@@ -245,9 +296,12 @@ def run_washout_test(processed_dir):
                 if pd.isna(washout_row[col]):
                     continue
 
-                baseline_mean = _get_baseline_mean(df, metric)
-                pct = _pct_change_from_baseline(washout_row[col], baseline_mean)
-                pct_changes.append(pct)
+                # Combined P3+P6 baseline mean — washout phases are not
+                # split by P-level so no per-level normalization needed
+                baseline_mean = _get_baseline_mean(df, metric, p_level=None)
+                pct = _pct_change(washout_row[col], baseline_mean)
+                if not pd.isna(pct):
+                    pct_changes.append(pct)
 
             if len(pct_changes) < 2:
                 print(f"  {metric:>12}: insufficient data "
@@ -302,7 +356,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Tee output to both console and txt file
     tee = Tee(args.output)
     sys.stdout = tee
 
