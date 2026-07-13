@@ -2,16 +2,39 @@
 shared/significance_testing.py
 
 Standalone significance testing module. NOT called from run_pipeline.py.
-Run manually to reproduce the statistical decisions that informed the pipeline design:
 
-    python -m shared.significance_testing
+Reusable across datasets — Impella-derived (AIC, TD, PP_impella, HR_impella,
+SmartPump, MAP_impella) and catheter-derived (dpdt_max, dpdt_min, lvedp,
+PP_catheter, HR_catheter, MAP_catheter) pickles both go through the same
+P3-vs-P6 and washout-vs-baseline logic below. Nothing about the tests
+themselves is dataset-specific -- only the processed_dir, metric column
+names, and pickle filename suffix change between the two.
+
+Run manually, pointing at whichever dataset you want to test:
+
+    # Impella-derived (default metrics/suffix shown explicitly for clarity)
+    python -m shared.significance_testing \\
+        --processed_dir data/processed/impella_derived/summary_data \\
+        --metrics AIC TD PP_impella HR_impella SmartPump MAP_impella \\
+        --pickle_suffix phase_summary
+
+    # Catheter-derived
+    python -m shared.significance_testing \\
+        --processed_dir data/processed/catheter_derived/summary_data \\
+        --metrics dpdt_max dpdt_min lvedp PP_catheter HR_catheter MAP_catheter \\
+        --pickle_suffix catheter_summary
+
+--processed_dir is REQUIRED (no default) -- there is no single "right" dataset
+for this module to assume. --metrics and --pickle_suffix default to the
+Impella-derived values so the original invocation shape still works if you
+only pass --processed_dir.
 
 Two tests are implemented:
 
 1. P3 vs P6 significance test
-   For each drug state (Baseline, Nitro, Phen, Dobu) and each metric
-   (AIC, TD, PP, HR, SmartPump, MAP), tests whether P3 and P6 measurements
-   differ significantly across the 4-animal normal cohort.
+   For each drug state (Baseline, Nitro, Phen, Dobu) and each metric in
+   --metrics, tests whether P3 and P6 measurements differ significantly
+   across the 4-animal normal cohort.
    Method: pool percent-change-from-own-p-level-baseline values across all
    4 animals separately for P3 and P6, then run an independent two-sample
    t-test. P6 measurements are normalized against P6 baseline mean; P3
@@ -22,8 +45,8 @@ Two tests are implemented:
 2. Washout vs Baseline significance test
    For Washout1 (post-Nitro) and Washout2 (post-Phen) only — washouts
    following Dobu or Esmo are excluded since we only analyze up to Dobu.
-   For each washout period and each metric (AIC, TD, PP, HR, SmartPump, MAP),
-   tests whether the washout measurements differ significantly from baseline.
+   For each washout period and each metric in --metrics, tests whether the
+   washout measurements differ significantly from baseline.
    Method: for each animal compute percent-change-from-baseline (combined
    P3+P6 baseline mean) for that washout phase, pool those values across
    all 4 animals, run a one-sample t-test against zero.
@@ -52,8 +75,10 @@ NORMAL_COHORT_IDS = ["202", "203", "205", "221"]
 # Drug states to include — Esmo excluded entirely from all analyses
 DRUG_STATES = ["Baseline", "Nitro", "Phen", "Dobu"]
 
-# Metrics to test
-METRICS = ["AIC", "TD", "PP", "HR", "SmartPump", "MAP"]
+# Default metrics/pickle suffix — Impella-derived dataset. Pass --metrics and
+# --pickle_suffix explicitly to run against catheter-derived data instead.
+DEFAULT_METRICS = ["AIC", "TD", "PP_impella", "HR_impella", "SmartPump", "MAP_impella"]
+DEFAULT_PICKLE_SUFFIX = "phase_summary"
 
 ALPHA = 0.05
 
@@ -80,9 +105,19 @@ class Tee:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _load_animal_summaries(processed_dir, animal_ids=NORMAL_COHORT_IDS):
+def _load_animal_summaries(processed_dir, pickle_suffix, animal_ids=NORMAL_COHORT_IDS):
     """
     Load per-animal phase-summary pickles and filter out Esmo phases.
+
+    Parameters
+    ----------
+    processed_dir : str or Path
+        Directory containing {animal_id}_{pickle_suffix}.pkl files.
+    pickle_suffix : str
+        e.g. "phase_summary" (Impella-derived) or "catheter_summary"
+        (catheter-derived).
+    animal_ids : list of str
+        Defaults to the 4-animal normal cohort.
 
     Returns
     -------
@@ -91,11 +126,12 @@ def _load_animal_summaries(processed_dir, animal_ids=NORMAL_COHORT_IDS):
     processed_dir = Path(processed_dir)
     data = {}
     for animal_id in animal_ids:
-        pkl_path = processed_dir / f"{animal_id}_phase_summary.pkl"
+        pkl_path = processed_dir / f"{animal_id}_{pickle_suffix}.pkl"
         if not pkl_path.exists():
             raise FileNotFoundError(
-                f"Phase summary pickle not found for animal {animal_id} at {pkl_path}.\n"
-                f"Run process_all_animals() first via run_pipeline.py."
+                f"Pickle not found for animal {animal_id} at {pkl_path}.\n"
+                f"Run the appropriate processing step first (raw_data_processing.py "
+                f"for Impella-derived, or the catheter-derived equivalent)."
             )
         df = pd.read_pickle(pkl_path)
         # Exclude Esmo phases entirely
@@ -113,7 +149,10 @@ def _get_baseline_mean(df, metric, p_level=None):
     df : DataFrame
         Per-animal phase-summary dataframe.
     metric : str
-        Metric name (e.g. "AIC", "TD", "PP").
+        Metric column prefix (e.g. "AIC", "TD", "PP_impella", "dpdt_max").
+        Matched exactly against "{metric}_mean" -- no case-folding or
+        fuzzy matching, since e.g. PP_impella and PP_catheter are distinct
+        quantities from different instruments and must never be conflated.
     p_level : str or None
         If provided (e.g. "P3" or "P6"), returns the baseline mean for that
         specific P-level only. Used in the P3 vs P6 test so that each group
@@ -170,7 +209,7 @@ def _get_washouts_in_scope(df):
 
 # ── Test 1: P3 vs P6 ─────────────────────────────────────────────────────────
 
-def run_p3_p6_test(processed_dir):
+def run_p3_p6_test(processed_dir, metrics, pickle_suffix):
     """
     Test whether P3 and P6 measurements differ significantly across
     drug states and metrics, pooled across all 4 normal-cohort animals.
@@ -184,19 +223,20 @@ def run_p3_p6_test(processed_dir):
     """
     print("\n" + "=" * 70)
     print("TEST 1: P3 vs P6 significance test")
+    print(f"Processed dir: {processed_dir}")
     print(f"Animals: {NORMAL_COHORT_IDS}")
     print(f"Drug states: {DRUG_STATES}")
-    print(f"Metrics: {METRICS}")
+    print(f"Metrics: {metrics}")
     print(f"Alpha: {ALPHA}")
     print("Normalization: each P-level normalized against its own baseline mean")
     print("=" * 70)
 
-    animal_data = _load_animal_summaries(processed_dir)
+    animal_data = _load_animal_summaries(processed_dir, pickle_suffix)
     any_significant = False
 
     for drug_state in DRUG_STATES:
         print(f"\n--- {drug_state} ---")
-        for metric in METRICS:
+        for metric in metrics:
             col = f"{metric}_mean"
             p3_values, p6_values = [], []
 
@@ -225,7 +265,7 @@ def run_p3_p6_test(processed_dir):
                         p6_values.append(pct)
 
             if len(p3_values) < 2 or len(p6_values) < 2:
-                print(f"  {metric:>12}: insufficient data "
+                print(f"  {metric:>14}: insufficient data "
                       f"(P3 n={len(p3_values)}, P6 n={len(p6_values)}) — skipped")
                 continue
 
@@ -235,7 +275,7 @@ def run_p3_p6_test(processed_dir):
                 any_significant = True
 
             flag = " *** SIGNIFICANT ***" if significant else ""
-            print(f"  {metric:>12}: t={t_stat:+.3f}, p={p_val:.4f} "
+            print(f"  {metric:>14}: t={t_stat:+.3f}, p={p_val:.4f} "
                   f"(P3 n={len(p3_values)}, P6 n={len(p6_values)}){flag}")
 
     print("\n" + "=" * 70)
@@ -251,7 +291,7 @@ def run_p3_p6_test(processed_dir):
 
 # ── Test 2: Washout vs Baseline ───────────────────────────────────────────────
 
-def run_washout_test(processed_dir):
+def run_washout_test(processed_dir, metrics, pickle_suffix):
     """
     Test whether Washout1 (post-Nitro) and Washout2 (post-Phen) differ
     significantly from baseline, pooled across all 4 normal-cohort animals.
@@ -265,22 +305,23 @@ def run_washout_test(processed_dir):
     """
     print("\n" + "=" * 70)
     print("TEST 2: Washout vs Baseline significance test")
+    print(f"Processed dir: {processed_dir}")
     print(f"Animals: {NORMAL_COHORT_IDS}")
-    print(f"Metrics: {METRICS}")
+    print(f"Metrics: {metrics}")
     print(f"Alpha: {ALPHA}")
     print("Note: only Washout1 (post-Nitro) and Washout2 (post-Phen) tested.")
     print("      Post-Dobu/Esmo washouts excluded.")
     print("      Normalization: combined P3+P6 baseline mean per animal.")
     print("=" * 70)
 
-    animal_data = _load_animal_summaries(processed_dir)
+    animal_data = _load_animal_summaries(processed_dir, pickle_suffix)
 
     washout_labels = {0: "Washout1 (post-Nitro)", 1: "Washout2 (post-Phen)"}
 
     for washout_idx in range(2):
         print(f"\n--- {washout_labels[washout_idx]} ---")
 
-        for metric in METRICS:
+        for metric in metrics:
             col = f"{metric}_mean"
             pct_changes = []
 
@@ -288,7 +329,7 @@ def run_washout_test(processed_dir):
                 washouts = _get_washouts_in_scope(df)
 
                 if washout_idx >= len(washouts):
-                    print(f"  {metric:>12}: animal {animal_id} has no "
+                    print(f"  {metric:>14}: animal {animal_id} has no "
                           f"{washout_labels[washout_idx]} in scope — skipped")
                     continue
 
@@ -304,7 +345,7 @@ def run_washout_test(processed_dir):
                     pct_changes.append(pct)
 
             if len(pct_changes) < 2:
-                print(f"  {metric:>12}: insufficient data "
+                print(f"  {metric:>14}: insufficient data "
                       f"(n={len(pct_changes)}) — skipped")
                 continue
 
@@ -313,7 +354,7 @@ def run_washout_test(processed_dir):
             mean_pct = np.mean(pct_changes)
 
             flag = " *** SIGNIFICANT ***" if significant else ""
-            print(f"  {metric:>12}: mean pct change={mean_pct:+.2f}%, "
+            print(f"  {metric:>14}: mean pct change={mean_pct:+.2f}%, "
                   f"t={t_stat:+.3f}, p={p_val:.4f} "
                   f"(n={len(pct_changes)}){flag}")
 
@@ -334,13 +375,37 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run significance tests for P3/P6 and washout vs baseline."
+        description="Run significance tests for P3/P6 and washout vs baseline. "
+                     "Reusable across datasets -- point --processed_dir, --metrics, "
+                     "and --pickle_suffix at either impella_derived or "
+                     "catheter_derived summary data."
     )
     parser.add_argument(
         "--processed_dir",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "data" / "processed" / "summary_data",
-        help="Directory containing per-animal phase-summary pickles.",
+        required=True,
+        help="Directory containing per-animal summary pickles. e.g. "
+             "data/processed/impella_derived/summary_data or "
+             "data/processed/catheter_derived/summary_data. No default -- "
+             "must be specified explicitly.",
+    )
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        default=DEFAULT_METRICS,
+        help=f"Metric column prefixes to test (matched exactly against "
+             f"'{{metric}}_mean'). Defaults to Impella-derived metrics: "
+             f"{DEFAULT_METRICS}. For catheter-derived data pass e.g. "
+             f"dpdt_max dpdt_min lvedp PP_catheter HR_catheter MAP_catheter.",
+    )
+    parser.add_argument(
+        "--pickle_suffix",
+        type=str,
+        default=DEFAULT_PICKLE_SUFFIX,
+        help=f"Pickle filename suffix -- files are expected at "
+             f"{{processed_dir}}/{{animal_id}}_{{pickle_suffix}}.pkl. "
+             f"Defaults to '{DEFAULT_PICKLE_SUFFIX}' (Impella-derived). "
+             f"Use 'catheter_summary' for catheter-derived data.",
     )
     parser.add_argument(
         "--test",
@@ -351,20 +416,23 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "data" / "processed" / "summary_data" / "significance_results.txt",
-        help="Where to save results as a text file.",
+        default=None,
+        help="Where to save results as a text file. Defaults to "
+             "{processed_dir}/significance_results.txt.",
     )
     args = parser.parse_args()
 
-    tee = Tee(args.output)
+    output_path = args.output or (args.processed_dir / "significance_results.txt")
+
+    tee = Tee(output_path)
     sys.stdout = tee
 
     try:
         if args.test in ("p3_p6", "both"):
-            run_p3_p6_test(args.processed_dir)
+            run_p3_p6_test(args.processed_dir, args.metrics, args.pickle_suffix)
         if args.test in ("washout", "both"):
-            run_washout_test(args.processed_dir)
+            run_washout_test(args.processed_dir, args.metrics, args.pickle_suffix)
     finally:
         sys.stdout = tee.terminal
         tee.close()
-        print(f"\nResults saved to: {args.output}")
+        print(f"\nResults saved to: {output_path}")
