@@ -196,6 +196,38 @@ def _generate_catheter_summaries(repo_root, force=False):
         )
 
 
+IMPELLA_SIGNIFICANCE_METRICS = ["AIC", "TD", "PP_impella", "HR_impella", "SmartPump", "MAP_impella"]
+
+
+def _run_impella_significance_testing(repo_root):
+    """
+    Stage 0a2: runs both significance tests (P3 vs P6, washout vs baseline)
+    against the Impella-derived summary data, for all six Impella-derived
+    metrics -- the mirror of _run_catheter_significance_testing() below, for
+    the other dataset. Same shared/significance_testing.py, no code changes
+    needed there either; same Tee-redirection replication.
+
+    Always runs fresh (no skip-if-exists), same rationale as the catheter
+    version -- fast, pure statistics, and naturally overwrites prior results.
+
+    Output: data/processed/impella_derived/summary_data/significance_results.txt
+    """
+    repo_root = Path(repo_root)
+    processed_dir = repo_root / "data" / "processed" / "impella_derived" / "summary_data"
+    output_path = processed_dir / "significance_results.txt"
+
+    tee = Tee(output_path)
+    real_stdout = sys.stdout
+    sys.stdout = tee
+    try:
+        run_p3_p6_test(processed_dir, IMPELLA_SIGNIFICANCE_METRICS, "phase_summary")
+        run_washout_test(processed_dir, IMPELLA_SIGNIFICANCE_METRICS, "phase_summary")
+    finally:
+        sys.stdout = real_stdout
+        tee.close()
+    print(f"Impella-derived significance testing results saved to: {output_path}")
+
+
 CATHETER_SIGNIFICANCE_METRICS = ["dpdt_max", "dpdt_min", "lvedp", "PP_catheter", "MAP_catheter", "HR_catheter"]
 
 
@@ -356,6 +388,12 @@ def main(repo_root, figures_dir, force_catheter=False):
     print("STAGE 0: Raw data processing")
     print("=" * 60)
     process_all_animals(repo_root=repo_root)
+
+    # ── Stage 0a: Impella-derived significance testing ───────────────────────
+    print("=" * 60)
+    print("STAGE 0a: Impella-derived significance testing (P3 vs P6, washout vs baseline)")
+    print("=" * 60)
+    _run_impella_significance_testing(repo_root=repo_root)
 
     # ── Stage 0b: Catheter-derived raw/phase data generation ────────────────
     print("=" * 60)

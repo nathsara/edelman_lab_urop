@@ -1,7 +1,7 @@
 
 ======================================================================
 TEST 1: P3 vs P6 significance test
-Processed dir: data\processed\impella_derived\summary_data
+Processed dir: C:\Users\saran\edelman_lab_urop\data\processed\impella_derived\summary_data
 Animals: ['202', '203', '205', '221']
 Drug states: ['Baseline', 'Nitro', 'Phen', 'Dobu']
 Metrics: ['AIC', 'TD', 'PP_impella', 'HR_impella', 'SmartPump', 'MAP_impella']
@@ -49,7 +49,7 @@ P-level distinction.
 
 ======================================================================
 TEST 2: Washout vs Baseline significance test
-Processed dir: data\processed\impella_derived\summary_data
+Processed dir: C:\Users\saran\edelman_lab_urop\data\processed\impella_derived\summary_data
 Animals: ['202', '203', '205', '221']
 Metrics: ['AIC', 'TD', 'PP_impella', 'HR_impella', 'SmartPump', 'MAP_impella']
 Alpha: 0.05
