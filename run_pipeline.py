@@ -20,15 +20,243 @@ import argparse
 from pathlib import Path
 
 from shared.raw_data_processing import process_all_animals
+from shared.catheter_phase_config import ANIMAL_PHASES
+from shared.catheter_data_init import (
+    find_vbu_lvv_folder, create_data_df, create_raw_phase_data,
+    create_aop_data_df, create_aop_phase_data,
+)
+from shared.catheter_data_processing import combined_phase_data
+import pandas as pd
+import plots
+
+# Catheter-derived pipeline scope: normal cohort ONLY. Baseline cohort is out
+# of scope for catheter-derived metrics -- see PROJECT_DECISIONS.md.
+CATHETER_ANIMAL_IDS = ["202", "203", "205", "221"]
+
+# Metrics plotted in Stage 0d, matching PPT slides 27 (dp/dt max), 28
+# (dp/dt min), 29 (LVEDP). PP/MAP/HR-catheter have no legacy PPT figure to
+# compare against (see PROJECT_DECISIONS.md) -- plotted using the same
+# adapter with corrected units, for the user's own manual value comparison
+# against their previously-saved data rather than a visual PPT diff.
+CATHETER_PLOT_METRICS = [
+    ("dpdt_max", "dp/dt max", "mmHG/s"),
+    ("dpdt_min", "dp/dt min", "mmHG/s"),
+    ("lvedp", "lvedp", "mmHG/s"),
+    ("PP_catheter", "PP catheter", "mmHg"),
+    ("MAP_catheter", "MAP catheter", "mmHg"),
+    ("HR_catheter", "HR catheter", "bpm"),
+]
 
 
-def main(repo_root, figures_dir):
+def _generate_catheter_raw_data(repo_root, force=False):
+    """
+    Stage 0b: for each normal-cohort animal, load raw VBU ECG/LVP data and
+    slice it into per-phase pickles (catheter_data_init.create_data_df +
+    create_raw_phase_data), then do the same for AOP
+    (create_aop_data_df + create_aop_phase_data), using the SAME per-phase
+    timestamps as ECG/LVP so all three signals land at identical
+    per-phase granularity.
+
+    Skips animals whose expected output already exists on disk, unless
+    force=True -- this step is expensive (~2.5 min + ~15 min across all 4
+    animals for ECG/LVP, plus a further AOP pass) and its output doesn't
+    change between runs unless the raw data itself changes, so re-running it
+    every single pipeline invocation isn't worth the cost by default.
+
+    HALTS on any error -- no per-animal try/except/continue. A partial or
+    missing set of per-phase pickles must never be silently left in place.
+    """
+    repo_root = Path(repo_root)
+    raw_root = repo_root / "data" / "raw"
+    raw_phase_root = repo_root / "data" / "processed" / "catheter_derived" / "raw_phase_data"
+
+    for animal_id in CATHETER_ANIMAL_IDS:
+        animal_dir = raw_phase_root / animal_id
+        raw_hd_pickle = animal_dir / f"raw_hd_data_{animal_id}.pkl"
+
+        matches = list(raw_root.glob(f"VBU_{animal_id}_*"))
+        if not matches:
+            raise FileNotFoundError(f"No VBU folder found for animal {animal_id} under {raw_root}")
+        vbu_folder = matches[0]
+
+        if raw_hd_pickle.exists() and not force:
+            print(f"[SKIP] {animal_id} raw combined ECG/LVP data already exists at {raw_hd_pickle}")
+        else:
+            lvv_folder = find_vbu_lvv_folder(vbu_folder, animal_id)
+            create_data_df(lvv_folder, animal_id, output_dir=animal_dir)
+            print(f"[OK]   {animal_id} raw combined ECG/LVP data -> {raw_hd_pickle}")
+
+        expected_phase_files = []
+        for label in ANIMAL_PHASES[animal_id]:
+            expected_phase_files.append(animal_dir / f"{label}_ecg_raw.pkl")
+            expected_phase_files.append(animal_dir / f"{label}_lvp_raw.pkl")
+
+        if all(f.exists() for f in expected_phase_files) and not force:
+            print(f"[SKIP] {animal_id} per-phase raw data already exists ({len(expected_phase_files) // 2} phases)")
+            continue
+
+        csv_path = vbu_folder / f"{animal_id}_TDvAIC.csv"
+        if not csv_path.exists():
+            alt_path = vbu_folder / f"{animal_id}_AICvTD.csv"
+            if alt_path.exists():
+                csv_path = alt_path
+            else:
+                raise FileNotFoundError(
+                    f"Could not find {animal_id}_TDvAIC.csv (or _AICvTD.csv) in {vbu_folder}"
+                )
+
+        create_raw_phase_data(
+            animal_summary_csv=csv_path,
+            raw_hd_data_pickle=raw_hd_pickle,
+            animal_id=animal_id,
+            output_dir=animal_dir,
+        )
+        print(f"[OK]   {animal_id} per-phase raw data ({len(ANIMAL_PHASES[animal_id])} phases) -> {animal_dir}")
+
+    for animal_id in CATHETER_ANIMAL_IDS:
+        # Separate loop from the ECG/LVP one above (rather than folding in) --
+        # keeps this additive: AOP extraction never touches or re-runs the
+        # already-confirmed-working ECG/LVP step, even if AOP fails or needs
+        # re-running later.
+        animal_dir = raw_phase_root / animal_id
+        raw_aop_pickle = animal_dir / f"raw_aop_data_{animal_id}.pkl"
+
+        matches = list(raw_root.glob(f"VBU_{animal_id}_*"))
+        if not matches:
+            raise FileNotFoundError(f"No VBU folder found for animal {animal_id} under {raw_root}")
+        vbu_folder = matches[0]
+
+        if raw_aop_pickle.exists() and not force:
+            print(f"[SKIP] {animal_id} raw combined AOP data already exists at {raw_aop_pickle}")
+        else:
+            lvv_folder = find_vbu_lvv_folder(vbu_folder, animal_id)
+            create_aop_data_df(lvv_folder, animal_id, output_dir=animal_dir)
+            print(f"[OK]   {animal_id} raw combined AOP data -> {raw_aop_pickle}")
+
+        expected_aop_files = [animal_dir / f"{label}_aop_raw.pkl" for label in ANIMAL_PHASES[animal_id]]
+        if all(f.exists() for f in expected_aop_files) and not force:
+            print(f"[SKIP] {animal_id} per-phase AOP data already exists ({len(expected_aop_files)} phases)")
+            continue
+
+        csv_path = vbu_folder / f"{animal_id}_TDvAIC.csv"
+        if not csv_path.exists():
+            alt_path = vbu_folder / f"{animal_id}_AICvTD.csv"
+            if alt_path.exists():
+                csv_path = alt_path
+            else:
+                raise FileNotFoundError(
+                    f"Could not find {animal_id}_TDvAIC.csv (or _AICvTD.csv) in {vbu_folder}"
+                )
+
+        create_aop_phase_data(
+            animal_summary_csv=csv_path,
+            raw_aop_data_pickle=raw_aop_pickle,
+            animal_id=animal_id,
+            output_dir=animal_dir,
+        )
+        print(f"[OK]   {animal_id} per-phase AOP data ({len(ANIMAL_PHASES[animal_id])} phases) -> {animal_dir}")
+
+
+def _generate_catheter_summaries(repo_root, force=False):
+    """
+    Stage 0c: run the dp/dt max/min + LVEDP + PP/MAP/HR-catheter
+    signal-processing pipeline for each normal-cohort animal, producing
+    {animal_id}_catheter_summary.pkl (mean/std per phase) AND, alongside it,
+    the full per-beat data for all six metrics under
+    data/processed/catheter_derived/per_beat_data/{animal_id}/ (one pickle
+    per phase per metric -- the final, fully-processed series each summary
+    mean/std is computed from, not intermediate half-baked versions).
+
+    Skips animals whose summary pickle already exists, unless force=True.
+
+    HALTS on any error (combined_phase_data itself halts per-phase, and no
+    try/except wraps the per-animal loop here either) -- a partial or
+    missing summary pickle must never be silently left in place.
+    """
+    repo_root = Path(repo_root)
+    raw_phase_root = repo_root / "data" / "processed" / "catheter_derived" / "raw_phase_data"
+    summary_dir = repo_root / "data" / "processed" / "catheter_derived" / "summary_data"
+
+    for animal_id in CATHETER_ANIMAL_IDS:
+        summary_path = summary_dir / f"{animal_id}_catheter_summary.pkl"
+        if summary_path.exists() and not force:
+            print(f"[SKIP] {animal_id} catheter summary already exists at {summary_path}")
+            continue
+
+        combined_phase_data(
+            animal_id=animal_id,
+            raw_phase_dir=raw_phase_root / animal_id,
+            output_dir=summary_dir,
+            plot=False,
+            per_beat_dir=repo_root / "data" / "processed" / "catheter_derived" / "per_beat_data" / animal_id,
+        )
+
+
+def _plot_catheter_summaries(repo_root):
+    """
+    Stage 0d: plots each normal-cohort animal's dp/dt max, dp/dt min, and
+    LVEDP data, using the UNCHANGED legacy plot functions (via
+    plots.plot_catheter_summary).
+
+    This IS the real, permanent Stage 4 catheter-metrics plotting step, not a
+    disposable QA-only script -- it stays in the pipeline going forward. What
+    WILL change later, once the new data is confirmed correct against PPT
+    slides 27-29: the plotting code itself gets a real style pass (legend,
+    layout, grouping by metric across animals per the PPT slide-26 notes,
+    etc.), and output moves from on-screen windows to saved files under
+    figures/04_hemodynamic_metrics_vs_td_aic_diff/. None of that restyling
+    happens here -- this function just calls the legacy plot functions as-is
+    against the new pipeline's data.
+
+    Uses plt.show() (inherited unchanged from legacy plots.py) rather than
+    saving to disk -- this BLOCKS execution until each of the 12 figures
+    (4 animals x 3 metrics) is manually closed. Deliberate for now, so every
+    figure gets actively looked at during development. No skip-if-exists
+    logic either, since nothing is persisted to disk to check against -- this
+    stage just always (re)displays from whatever summary pickles exist.
+    """
+    repo_root = Path(repo_root)
+    summary_dir = repo_root / "data" / "processed" / "catheter_derived" / "summary_data"
+
+    for animal_id in CATHETER_ANIMAL_IDS:
+        summary_path = summary_dir / f"{animal_id}_catheter_summary.pkl"
+        if not summary_path.exists():
+            raise FileNotFoundError(
+                f"No catheter summary found for animal {animal_id} at {summary_path}. "
+                f"Stage 0c should have produced this -- run the pipeline from the start."
+            )
+        summary_df = pd.read_pickle(summary_path)
+
+        for metric, metric_label, ylabel in CATHETER_PLOT_METRICS:
+            print(f"Plotting {animal_id} — {metric_label}...")
+            plots.plot_catheter_summary(summary_df, animal_id, metric, metric_label, ylabel=ylabel)
+
+
+def main(repo_root, figures_dir, force_catheter=False):
 
     # ── Stage 0: Raw data processing ─────────────────────────────────────────
     print("=" * 60)
     print("STAGE 0: Raw data processing")
     print("=" * 60)
     process_all_animals(repo_root=repo_root)
+
+    # ── Stage 0b: Catheter-derived raw/phase data generation ────────────────
+    print("=" * 60)
+    print("STAGE 0b: Catheter-derived raw/phase data generation")
+    print("=" * 60)
+    _generate_catheter_raw_data(repo_root=repo_root, force=force_catheter)
+
+    # ── Stage 0c: Catheter-derived signal processing (dp/dt, LVEDP) ─────────
+    print("=" * 60)
+    print("STAGE 0c: Catheter-derived signal processing")
+    print("=" * 60)
+    _generate_catheter_summaries(repo_root=repo_root, force=force_catheter)
+
+    # ── Stage 0d: Catheter-derived metric plotting ───────────────────────────
+    print("=" * 60)
+    print("STAGE 0d: Catheter-derived metric plotting — close each figure to continue")
+    print("=" * 60)
+    _plot_catheter_summaries(repo_root=repo_root)
 
     # ── Stage 1: Baseline analysis ────────────────────────────────────────────
     # TODO: uncomment once written
@@ -69,10 +297,18 @@ if __name__ == "__main__":
         default=None,
         help="Where to save figures. Defaults to {repo_root}/figures/",
     )
+    parser.add_argument(
+        "--force_catheter",
+        action="store_true",
+        help="Regenerate catheter-derived raw/phase data and summaries even if "
+             "already present on disk. Default: skip animals whose expected "
+             "output already exists (this stage is expensive, ~17.5 min across "
+             "all 4 animals for the raw/phase step alone).",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent
     figures_dir = args.figures_dir or repo_root / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
-    main(repo_root=repo_root, figures_dir=figures_dir)
+    main(repo_root=repo_root, figures_dir=figures_dir, force_catheter=args.force_catheter)
