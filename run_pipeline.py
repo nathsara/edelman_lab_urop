@@ -17,6 +17,7 @@ design reflects the decisions informed by those tests.
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 from shared.raw_data_processing import process_all_animals
@@ -27,6 +28,7 @@ from shared.catheter_data_init import (
     create_coarse_phase_data, create_coarse_aop_phase_data, COARSE_DRUGS,
 )
 from shared.catheter_data_processing import combined_phase_data
+from shared.significance_testing import run_p3_p6_test, run_washout_test, Tee
 from ct_drug_effect_analysis.process import process_coarse_phase
 import pandas as pd
 import plots
@@ -194,6 +196,45 @@ def _generate_catheter_summaries(repo_root, force=False):
         )
 
 
+CATHETER_SIGNIFICANCE_METRICS = ["dpdt_max", "dpdt_min", "lvedp", "PP_catheter", "MAP_catheter", "HR_catheter"]
+
+
+def _run_catheter_significance_testing(repo_root):
+    """
+    Stage 0c2: runs both significance tests (P3 vs P6, washout vs baseline)
+    against the catheter-derived summary data, for all six catheter-derived
+    metrics. shared/significance_testing.py needed NO code changes for this
+    -- it was already built fully generic over metric names/dataset location
+    (see its module docstring); only the CLI's __main__ block (argument
+    parsing + Tee output redirection) wasn't factored into an importable
+    function, so that's replicated here directly.
+
+    Always runs fresh (no skip-if-exists) -- this is fast (pure statistics
+    over already-computed summary data, no signal processing), and Tee opens
+    its output file in write mode, so this naturally overwrites whatever
+    results were there before (e.g. an earlier partial run covering only
+    dpdt_max/dpdt_min/lvedp, from before PP/HR/MAP-catheter existed) with
+    the full six-metric result -- exactly the desired "more comprehensive,
+    replaces previous" behavior, with no special-case code needed for it.
+
+    Output: data/processed/catheter_derived/summary_data/significance_results.txt
+    """
+    repo_root = Path(repo_root)
+    processed_dir = repo_root / "data" / "processed" / "catheter_derived" / "summary_data"
+    output_path = processed_dir / "significance_results.txt"
+
+    tee = Tee(output_path)
+    real_stdout = sys.stdout
+    sys.stdout = tee
+    try:
+        run_p3_p6_test(processed_dir, CATHETER_SIGNIFICANCE_METRICS, "catheter_summary")
+        run_washout_test(processed_dir, CATHETER_SIGNIFICANCE_METRICS, "catheter_summary")
+    finally:
+        sys.stdout = real_stdout
+        tee.close()
+    print(f"Catheter-derived significance testing results saved to: {output_path}")
+
+
 def _plot_catheter_summaries(repo_root):
     """
     Stage 0d: plots each normal-cohort animal's dp/dt max, dp/dt min, and
@@ -328,21 +369,27 @@ def main(repo_root, figures_dir, force_catheter=False):
     print("=" * 60)
     _generate_catheter_summaries(repo_root=repo_root, force=force_catheter)
 
+    # ── Stage 0d: Catheter-derived significance testing ──────────────────────
+    print("=" * 60)
+    print("STAGE 0d: Catheter-derived significance testing (P3 vs P6, washout vs baseline)")
+    print("=" * 60)
+    _run_catheter_significance_testing(repo_root=repo_root)
+
     # ── Stage 0e: Coarse (whole-drug-state) raw data for continuous trajectories
     print("=" * 60)
-    print("STAGE 0d: Coarse raw data (Nitro/Phen/Dobu whole-drug-state windows)")
+    print("STAGE 0e: Coarse raw data (Nitro/Phen/Dobu whole-drug-state windows)")
     print("=" * 60)
     _generate_coarse_raw_data(repo_root=repo_root, force=force_catheter)
 
     # ── Stage 0f: Continuous-time drug-effect trajectory data (Stage 2 data) ─
     print("=" * 60)
-    print("STAGE 0e: Continuous-time drug-effect trajectory data")
+    print("STAGE 0f: Continuous-time drug-effect trajectory data")
     print("=" * 60)
     _generate_ct_drug_effect_data(repo_root=repo_root, force=force_catheter)
 
-    # ── Stage 0d: Catheter-derived metric plotting ───────────────────────────
+    # ── Stage 0g: Catheter-derived metric plotting ───────────────────────────
     print("=" * 60)
-    print("STAGE 0f: Catheter-derived metric plotting — close each figure to continue")
+    print("STAGE 0g: Catheter-derived metric plotting — close each figure to continue")
     print("=" * 60)
     _plot_catheter_summaries(repo_root=repo_root)
 
