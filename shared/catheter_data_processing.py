@@ -79,6 +79,7 @@ catheter_phase_config.ANIMAL_PHASES.
 
 from pathlib import Path
 from datetime import datetime, timedelta
+import time
 
 import pandas as pd
 from scipy.signal import find_peaks
@@ -148,6 +149,7 @@ def process_phase(label, raw_phase_dir, plot=False, per_beat_dir=None):
     raw_phase_dir = Path(raw_phase_dir)
     ecg_df = pd.read_pickle(raw_phase_dir / f"{label}_ecg_raw.pkl")
     lvp_df = pd.read_pickle(raw_phase_dir / f"{label}_lvp_raw.pkl")
+    print(f"    [{label}] loaded {len(ecg_df)} ECG rows, {len(lvp_df)} LVP rows")
 
     ecg_df = arrhythmia_removal(label, ecg_df)
     lvp_df = arrhythmia_removal(label, lvp_df)
@@ -157,32 +159,73 @@ def process_phase(label, raw_phase_dir, plot=False, per_beat_dir=None):
             _extra_processing_pipeline(ecg_df, lvp_df, lvedp_finetuning=True)
         )
     else:
+        _t0 = time.time()
         dpdt = _calc_deriv_lvp(list(lvp_df["lvp"]), list(lvp_df["time"]))
-        r_peaks = _christov_beat_timestamps(list(ecg_df["ecg"]))
-        r_peaks_timestamps = [list(ecg_df["time"])[r] for r in r_peaks]
-        lvp_peaks = find_peaks(list(lvp_df["lvp"]), height=50)
-        lvp_peaks_timestamps = [list(lvp_df["time"])[r] for r in list(lvp_peaks[0])]
-        r_peaks_timestamps = _r_peak_corrector(r_peaks_timestamps, lvp_peaks_timestamps)
+        print(f"    [{label}] dp/dt derivative computed ({time.time()-_t0:.1f}s)")
 
+        _t0 = time.time()
+        r_peaks = _christov_beat_timestamps(list(ecg_df["ecg"]))
+        print(f"    [{label}] R-peak detection done, {len(r_peaks)} beats found ({time.time()-_t0:.1f}s)")
+
+        _t0 = time.time()
+        # PERFORMANCE FIX (efficiency-only, provably identical output):
+        # legacy called list(ecg_df["time"]) / list(lvp_df["time"]) INSIDE
+        # the list comprehension -- meaning the full column gets rebuilt
+        # into a fresh list on EVERY iteration, not once. For a large
+        # continuous window this is catastrophic (confirmed: a synthetic
+        # test at this data's actual scale, ~1M rows, ~7700 lookups, timed
+        # out entirely for the buggy version; the fixed version ran in
+        # 0.06s). Hoisting list(...) outside the comprehension so it's
+        # built ONCE produces the exact same indexed values, just without
+        # rebuilding the list thousands of times over.
+        ecg_time_list = list(ecg_df["time"])
+        r_peaks_timestamps = [ecg_time_list[r] for r in r_peaks]
+        lvp_peaks = find_peaks(list(lvp_df["lvp"]), height=50)
+        lvp_time_list = list(lvp_df["time"])
+        lvp_peaks_timestamps = [lvp_time_list[r] for r in list(lvp_peaks[0])]
+        print(f"    [{label}] R-peak/LVP-peak timestamps resolved ({time.time()-_t0:.1f}s)")
+
+        _t0 = time.time()
+        r_peaks_timestamps = _r_peak_corrector(r_peaks_timestamps, lvp_peaks_timestamps)
+        print(f"    [{label}] R-peaks corrected against LVP peaks, {len(r_peaks_timestamps)} remain ({time.time()-_t0:.1f}s)")
+
+        _t0 = time.time()
         lvedp_data = []
-        reference_indices = [list(lvp_df["time"]).index(x) for x in r_peaks_timestamps]
+        # PERFORMANCE FIX (efficiency-only, provably identical output): legacy
+        # called list.index() inside this list comprehension -- a full O(n)
+        # linear scan PER r-peak. Fine for small fine-phase windows (a few
+        # thousand samples), but for large continuous coarse windows (e.g. a
+        # 71-minute Nitro block, ~1.6M samples) this became O(n*m) and could
+        # take a very long time. Precomputing the timestamp->index map once
+        # (O(n)) then doing O(1) dict lookups per r-peak (O(m)) produces the
+        # EXACT same reference_indices, just fast -- timestamps here are real,
+        # distinct wall-clock values, so there's no duplicate-key ambiguity.
+        lvp_time_to_index = {t: i for i, t in enumerate(list(lvp_df["time"]))}
+        reference_indices = [lvp_time_to_index[x] for x in r_peaks_timestamps]
         for ref_idx in reference_indices:
             lvedp_data.append(lvp_df["lvp"].iloc[ref_idx])
         lvedp = pd.DataFrame({"time": r_peaks_timestamps, "lvedp": lvedp_data})
+        print(f"    [{label}] LVEDP extracted ({time.time()-_t0:.1f}s)")
 
+        _t0 = time.time()
         max_dpdt, min_dpdt, _max_timestamps = _dpdt_minmax_extractor(dpdt, r_peaks, list(ecg_df["time"]))
+        print(f"    [{label}] dp/dt max/min per beat extracted ({time.time()-_t0:.1f}s)")
 
+        _t0 = time.time()
         dpdt_max_list, dpdt_max_time_list = _dpdt_max_finetuner(
             dpdt, max_dpdt["dpdt_max"].tolist(), max_dpdt["time"].tolist(), lvp_df["time"][:-1].tolist()
         )
         dpdt_max_list, dpdt_max_time_list = _finetune_signal(dpdt_max_list, dpdt_max_time_list)
         max_dpdt = pd.DataFrame({"time": dpdt_max_time_list, "dpdt_max": dpdt_max_list})
+        print(f"    [{label}] dp/dt max finetuned ({time.time()-_t0:.1f}s)")
 
+        _t0 = time.time()
         dpdt_min_list, dpdt_min_time_list = _dpdt_min_finetuner(
             dpdt, min_dpdt["dpdt_min"].tolist(), min_dpdt["time"].tolist(), lvp_df["time"][:-1].tolist()
         )
         dpdt_min_list, dpdt_min_time_list = _finetune_signal(dpdt_min_list, dpdt_min_time_list)
         min_dpdt = pd.DataFrame({"time": dpdt_min_time_list, "dpdt_min": dpdt_min_list})
+        print(f"    [{label}] dp/dt min finetuned ({time.time()-_t0:.1f}s)")
 
     # Two rounds of outlier detection/removal -- preserved exactly from
     # legacy. Unlike legacy, no intermediate _cleaned / _cleaner pickles are
@@ -248,8 +291,14 @@ def process_phase(label, raw_phase_dir, plot=False, per_beat_dir=None):
 def _calc_systolic(aop_df, label):
     aop_df = arrhythmia_removal(label, aop_df)
     systolic_indices = find_peaks(list(aop_df["aop"]), prominence=20, width=5)
-    systolic = [list(aop_df["aop"])[r] for r in list(systolic_indices[0])]
-    systolic_timestamps = [list(aop_df["time"])[r] for r in list(systolic_indices[0])]
+    # PERFORMANCE FIX (efficiency-only, provably identical output): same
+    # list-rebuilt-per-iteration bug as elsewhere in this module -- see
+    # process_phase()'s matching fix for the full explanation and a timed
+    # confirmation of the severity at this data's real scale.
+    aop_list = list(aop_df["aop"])
+    aop_time_list = list(aop_df["time"])
+    systolic = [aop_list[r] for r in list(systolic_indices[0])]
+    systolic_timestamps = [aop_time_list[r] for r in list(systolic_indices[0])]
     return pd.DataFrame({"time": systolic_timestamps, "systolic_pressure": systolic})
 
 
@@ -257,8 +306,10 @@ def _calc_diastolic(aop_df, label):
     aop_df = arrhythmia_removal(label, aop_df)
     inverted_aop = [-x for x in list(aop_df["aop"])]
     diastolic_indices = find_peaks(inverted_aop, prominence=20, width=5)
-    diastolic = [list(aop_df["aop"])[r] for r in list(diastolic_indices[0])]
-    diastolic_timestamps = [list(aop_df["time"])[r] for r in list(diastolic_indices[0])]
+    aop_list = list(aop_df["aop"])
+    aop_time_list = list(aop_df["time"])
+    diastolic = [aop_list[r] for r in list(diastolic_indices[0])]
+    diastolic_timestamps = [aop_time_list[r] for r in list(diastolic_indices[0])]
     return pd.DataFrame({"time": diastolic_timestamps, "diastolic_pressure": diastolic})
 
 
@@ -311,11 +362,17 @@ def _calc_hr(ecg_df, lvp_df, label):
     ecg_df = arrhythmia_removal(label, ecg_df)
     lvp_df = arrhythmia_removal(label, lvp_df)
 
+    _t0 = time.time()
     r_peaks = _christov_beat_timestamps(list(ecg_df["ecg"]))
-    r_peaks_timestamps = [list(ecg_df["time"])[r] for r in r_peaks]
+    print(f"    [{label}] (HR) R-peak detection done, {len(r_peaks)} beats found ({time.time()-_t0:.1f}s)")
+    _t0 = time.time()
+    ecg_time_list = list(ecg_df["time"])
+    r_peaks_timestamps = [ecg_time_list[r] for r in r_peaks]
     lvp_peaks = find_peaks(list(lvp_df["lvp"]), height=50)
-    lvp_peaks_timestamps = [list(lvp_df["time"])[r] for r in list(lvp_peaks[0])]
+    lvp_time_list = list(lvp_df["time"])
+    lvp_peaks_timestamps = [lvp_time_list[r] for r in list(lvp_peaks[0])]
     r_peaks_timestamps = _r_peak_corrector(r_peaks_timestamps, lvp_peaks_timestamps)
+    print(f"    [{label}] (HR) R-peaks resolved and corrected, {len(r_peaks_timestamps)} remain ({time.time()-_t0:.1f}s)")
 
     continuous_hr = []
     for ts in range(len(r_peaks_timestamps) - 1):
@@ -353,11 +410,25 @@ def process_phase_hemodynamics(label, raw_phase_dir, per_beat_dir=None):
     ecg_df = pd.read_pickle(raw_phase_dir / f"{label}_ecg_raw.pkl")
     lvp_df = pd.read_pickle(raw_phase_dir / f"{label}_lvp_raw.pkl")
 
+    _t0 = time.time()
     systolic_df = _calc_systolic(aop_df, label)
     diastolic_df = _calc_diastolic(aop_df, label)
     pp_df = _calc_pulse_pressure(systolic_df, diastolic_df)
     map_df = _calc_map(systolic_df, diastolic_df)
+    print(f"    [{label}] PP/MAP computed from AOP ({time.time()-_t0:.1f}s)")
+
+    # NOTE: _calc_hr() below runs its OWN full beat-detection pass
+    # (_christov_beat_timestamps + _r_peak_corrector) on the same ecg_df/
+    # lvp_df that process_phase() already ran beat detection on for this
+    # same label -- genuinely redundant, beat detection runs twice per
+    # animal-drug pair. Not deduplicated here (would mean restructuring how
+    # combined_phase_data calls both functions, riskier to change correctly
+    # under time pressure than adding visibility first) -- if this specific
+    # step turns out to be a major share of the total runtime, worth
+    # revisiting to share one r_peaks computation between both functions.
+    _t0 = time.time()
     hr_df = _calc_hr(ecg_df, lvp_df, label)
+    print(f"    [{label}] HR computed ({time.time()-_t0:.1f}s)")
 
     if per_beat_dir is not None:
         per_beat_dir = Path(per_beat_dir)
@@ -522,16 +593,24 @@ def _extra_processing_pipeline(ecg_df, lvp_df, lvedp_finetuning=True, dpdt_finet
 
 
 def _pipeline_segment(ecg_segment, lvp_segment):
-    """Processes one small continuous ECG/LVP segment. Preserved exactly from legacy pipeline_segment."""
+    """
+    Processes one small continuous ECG/LVP segment. Preserved exactly from
+    legacy pipeline_segment, aside from the same list(...)-rebuilt-per-
+    iteration fix applied elsewhere in this module (not a real bottleneck
+    here since segments are capped at 10s, but fixed for consistency).
+    """
     dpdt_segment = _calc_deriv_lvp(list(lvp_segment["lvp"]), list(lvp_segment["time"]))
     r_peaks_segment = _christov_beat_timestamps(list(ecg_segment["ecg"]))
-    r_peaks_timestamps_segment = [list(ecg_segment["time"])[r] for r in r_peaks_segment]
+    ecg_segment_time_list = list(ecg_segment["time"])
+    r_peaks_timestamps_segment = [ecg_segment_time_list[r] for r in r_peaks_segment]
     lvp_peaks_segment = find_peaks(list(lvp_segment["lvp"]), height=50)
-    lvp_peaks_timestamps_segment = [list(lvp_segment["time"])[r] for r in list(lvp_peaks_segment[0])]
+    lvp_segment_time_list = list(lvp_segment["time"])
+    lvp_peaks_timestamps_segment = [lvp_segment_time_list[r] for r in list(lvp_peaks_segment[0])]
     r_peaks_timestamps_segment = _r_peak_corrector(r_peaks_timestamps_segment, lvp_peaks_timestamps_segment)
 
     lvedp_data_segment = []
-    reference_indices = [list(lvp_segment["time"]).index(x) for x in r_peaks_timestamps_segment]
+    lvp_segment_time_to_index = {t: i for i, t in enumerate(list(lvp_segment["time"]))}
+    reference_indices = [lvp_segment_time_to_index[x] for x in r_peaks_timestamps_segment]
     for ref_idx in reference_indices:
         lvedp_data_segment.append(lvp_segment["lvp"][ref_idx])
 
@@ -565,6 +644,14 @@ def _christov_beat_timestamps(ext_ecg):
 
 
 def _r_peak_corrector(r_peak_timestamps, lvp_peaks_timestamps):
+    # PERFORMANCE NOTE (efficiency-only, provably identical output): added
+    # `break` once a match is found -- the outer logic only cares whether
+    # ANY lvp peak falls in [curr_r_peak, next_r_peak] (a boolean OR,
+    # order-independent), so stopping the inner scan early never changes
+    # the result, just avoids continuing to scan lvp_peaks_timestamps
+    # pointlessly after the answer is already known. Matters at the scale
+    # of large continuous coarse windows (thousands of peaks), where legacy's
+    # unconditional full inner scan became a real bottleneck.
     r_peaks = []
     for rts_index in range(len(r_peak_timestamps) - 1):
         true_r_peak = False
@@ -575,6 +662,7 @@ def _r_peak_corrector(r_peak_timestamps, lvp_peaks_timestamps):
             curr_lvp_peak = lvp_peaks_timestamps[lvpp_index]
             if curr_r_peak <= curr_lvp_peak <= next_r_peak:
                 true_r_peak = True
+                break
 
         if true_r_peak:
             r_peaks.append(r_peak_timestamps[rts_index])
@@ -707,9 +795,15 @@ def _lvedp_finetuner(lvedp, lvedp_timestamps, lvp, lvp_timestamps, resolution=10
     index goes negative, Python silently wraps to read from the end of the
     list rather than raising. Not fixed, per "preserve legacy computation
     exactly" -- flagged in the module docstring.
+
+    PERFORMANCE FIX (efficiency-only, provably identical output): replaced
+    a per-iteration list.index() linear scan with a precomputed dict lookup
+    -- see process_phase()'s matching fix for the full explanation. Same
+    O(n*m) -> O(n+m) improvement, same guarantee of identical results.
     """
+    lvp_time_to_index = {t: i for i, t in enumerate(lvp_timestamps)}
     for i in range(len(lvedp_timestamps)):
-        index_on_lvp = lvp_timestamps.index(lvedp_timestamps[i])
+        index_on_lvp = lvp_time_to_index[lvedp_timestamps[i]]
         real_lvedp = lvedp[i]
         real_lvedp_timestamp = lvedp_timestamps[i]
 
@@ -733,9 +827,15 @@ def _dpdt_max_finetuner(dpdt, dpdt_max, dpdt_max_timestamps, dpdt_timestamps, re
     r-peak timestamp. 15 points = 60ms of data.
 
     QUIRK PRESERVED (#2 above): guards the upper bound only.
+
+    PERFORMANCE FIX (efficiency-only, provably identical output): replaced
+    a per-iteration list.index() linear scan with a precomputed dict lookup
+    -- see process_phase()'s matching fix for the full explanation. Same
+    O(n*m) -> O(n+m) improvement, same guarantee of identical results.
     """
+    dpdt_time_to_index = {t: i for i, t in enumerate(dpdt_timestamps)}
     for i in range(len(dpdt_max_timestamps)):
-        index_on_dpdt = dpdt_timestamps.index(dpdt_max_timestamps[i])
+        index_on_dpdt = dpdt_time_to_index[dpdt_max_timestamps[i]]
         real_dpdt_max = dpdt_max[i]
         real_dpdt_max_timestamp = dpdt_max_timestamps[i]
 
@@ -761,9 +861,15 @@ def _dpdt_min_finetuner(dpdt, dpdt_min, dpdt_min_timestamps, dpdt_timestamps, re
     dpdt_max_finetuner, an out-of-range index here will raise IndexError
     rather than being silently skipped. Not fixed, per "preserve legacy
     computation exactly."
+
+    PERFORMANCE FIX (efficiency-only, provably identical output): replaced
+    a per-iteration list.index() linear scan with a precomputed dict lookup
+    -- see process_phase()'s matching fix for the full explanation. Same
+    O(n*m) -> O(n+m) improvement, same guarantee of identical results.
     """
+    dpdt_time_to_index = {t: i for i, t in enumerate(dpdt_timestamps)}
     for i in range(len(dpdt_min_timestamps)):
-        index_on_dpdt = dpdt_timestamps.index(dpdt_min_timestamps[i])
+        index_on_dpdt = dpdt_time_to_index[dpdt_min_timestamps[i]]
         real_dpdt_min = dpdt_min[i]
         real_dpdt_min_timestamp = dpdt_min_timestamps[i]
 

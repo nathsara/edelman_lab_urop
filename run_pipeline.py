@@ -24,8 +24,10 @@ from shared.catheter_phase_config import ANIMAL_PHASES
 from shared.catheter_data_init import (
     find_vbu_lvv_folder, create_data_df, create_raw_phase_data,
     create_aop_data_df, create_aop_phase_data,
+    create_coarse_phase_data, create_coarse_aop_phase_data, COARSE_DRUGS,
 )
 from shared.catheter_data_processing import combined_phase_data
+from ct_drug_effect_analysis.process import process_coarse_phase
 import pandas as pd
 import plots
 
@@ -232,6 +234,80 @@ def _plot_catheter_summaries(repo_root):
             plots.plot_catheter_summary(summary_df, animal_id, metric, metric_label, ylabel=ylabel)
 
 
+def _generate_coarse_raw_data(repo_root, force=False):
+    """
+    Stage 0e: for each normal-cohort animal, slice the already-extracted
+    full-animal raw ECG/LVP/AOP data (raw_hd_data_{animal_id}.pkl /
+    raw_aop_data_{animal_id}.pkl, from Stage 0b) into coarse whole-drug-state
+    windows (Nitro/Phen/Dobu -- Stage 2's confirmed scope), using REAL
+    recorded timestamps from data/raw/drug_start_end_times.csv. Does not
+    re-read the VBU CSVs -- just re-slices data already on disk.
+
+    Skips animals whose expected coarse output already exists, unless
+    force=True. HALTS on any error.
+    """
+    repo_root = Path(repo_root)
+    raw_phase_root = repo_root / "data" / "processed" / "catheter_derived" / "raw_phase_data"
+    drug_csv = repo_root / "data" / "raw" / "drug_start_end_times.csv"
+
+    for animal_id in CATHETER_ANIMAL_IDS:
+        animal_dir = raw_phase_root / animal_id
+        raw_hd_pickle = animal_dir / f"raw_hd_data_{animal_id}.pkl"
+        raw_aop_pickle = animal_dir / f"raw_aop_data_{animal_id}.pkl"
+
+        expected_files = []
+        for drug in COARSE_DRUGS:
+            label = f"{animal_id}_{drug}"
+            expected_files += [
+                animal_dir / f"{label}_ecg_raw.pkl",
+                animal_dir / f"{label}_lvp_raw.pkl",
+                animal_dir / f"{label}_aop_raw.pkl",
+            ]
+
+        if all(f.exists() for f in expected_files) and not force:
+            print(f"[SKIP] {animal_id} coarse raw data already exists ({len(COARSE_DRUGS)} drug states)")
+            continue
+
+        create_coarse_phase_data(drug_csv, raw_hd_pickle, animal_id, output_dir=animal_dir)
+        create_coarse_aop_phase_data(drug_csv, raw_aop_pickle, animal_id, output_dir=animal_dir)
+        print(f"[OK]   {animal_id} coarse raw data ({len(COARSE_DRUGS)} drug states) -> {animal_dir}")
+
+
+def _generate_ct_drug_effect_data(repo_root, force=False):
+    """
+    Stage 0e: Stage 2's data layer -- continuous-time drug-effect trajectory
+    data (per-beat + percent-change-from-baseline + rolling window=240
+    average) for all six metrics, per animal x drug state. Code lives in
+    ct_drug_effect_analysis/process.py; output lands in
+    data/processed/ct_drug_effect/{animal_id}/.
+
+    Skips animal-drug pairs whose output already exists (spot-checked via
+    one representative file), unless force=True. HALTS on any error.
+    """
+    repo_root = Path(repo_root)
+    raw_phase_root = repo_root / "data" / "processed" / "catheter_derived" / "raw_phase_data"
+    catheter_summary_dir = repo_root / "data" / "processed" / "catheter_derived" / "summary_data"
+    output_root = repo_root / "data" / "processed" / "ct_drug_effect"
+
+    for animal_id in CATHETER_ANIMAL_IDS:
+        for drug in COARSE_DRUGS:
+            label = f"{animal_id}_{drug}"
+            output_dir = output_root / animal_id
+            check_file = output_dir / f"{label}_hr_catheter_MA.pkl"
+
+            if check_file.exists() and not force:
+                print(f"[SKIP] {label} continuous trajectory data already exists")
+                continue
+
+            process_coarse_phase(
+                animal_id=animal_id,
+                drug=drug,
+                raw_phase_dir=raw_phase_root / animal_id,
+                catheter_summary_dir=catheter_summary_dir,
+                output_dir=output_dir,
+            )
+
+
 def main(repo_root, figures_dir, force_catheter=False):
 
     # ── Stage 0: Raw data processing ─────────────────────────────────────────
@@ -252,9 +328,21 @@ def main(repo_root, figures_dir, force_catheter=False):
     print("=" * 60)
     _generate_catheter_summaries(repo_root=repo_root, force=force_catheter)
 
+    # ── Stage 0e: Coarse (whole-drug-state) raw data for continuous trajectories
+    print("=" * 60)
+    print("STAGE 0d: Coarse raw data (Nitro/Phen/Dobu whole-drug-state windows)")
+    print("=" * 60)
+    _generate_coarse_raw_data(repo_root=repo_root, force=force_catheter)
+
+    # ── Stage 0f: Continuous-time drug-effect trajectory data (Stage 2 data) ─
+    print("=" * 60)
+    print("STAGE 0e: Continuous-time drug-effect trajectory data")
+    print("=" * 60)
+    _generate_ct_drug_effect_data(repo_root=repo_root, force=force_catheter)
+
     # ── Stage 0d: Catheter-derived metric plotting ───────────────────────────
     print("=" * 60)
-    print("STAGE 0d: Catheter-derived metric plotting — close each figure to continue")
+    print("STAGE 0f: Catheter-derived metric plotting — close each figure to continue")
     print("=" * 60)
     _plot_catheter_summaries(repo_root=repo_root)
 
@@ -266,11 +354,12 @@ def main(repo_root, figures_dir, force_catheter=False):
     # plot_baseline_analysis(figures_dir=figures_dir / "01_baseline_analysis")
 
     # ── Stage 2: Drug effect trajectory analysis ──────────────────────────────
-    # TODO: uncomment once written
-    # from 02_drug_effect_trajectory.process import run_drug_trajectory
-    # from 02_drug_effect_trajectory.plot import plot_drug_trajectory
-    # run_drug_trajectory(repo_root=repo_root)
-    # plot_drug_trajectory(figures_dir=figures_dir / "02_drug_effect_trajectory")
+    # Data layer already built and wired in above (Stages 0d/0e). Only the
+    # actual figure generation remains -- deliberately deferred, see
+    # ct_drug_effect_analysis/process.py's module docstring.
+    # TODO: uncomment once plot.py is written
+    # from ct_drug_effect_analysis.plot import plot_drug_trajectory
+    # plot_drug_trajectory(figures_dir=figures_dir / "ct_drug_effect_analysis")
 
     # ── Stage 3: TD vs AIC across drug states ────────────────────────────────
     # TODO: uncomment once written

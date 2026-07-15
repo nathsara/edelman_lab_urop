@@ -110,14 +110,20 @@ ARRHYTHMIA_EXCLUSION_WINDOWS = {
 }
 
 # Phases requiring the segment-splitting "extra processing" pipeline
-# (lvedp_finetuning=True path in legacy pipeline()). In the legacy code this
-# was a SEPARATE hardcoded list that happened to contain exactly the same four
-# phases as ARRHYTHMIA_EXCLUSION_WINDOWS above -- which makes sense: removing
-# arrhythmia windows creates gaps in the data, and those gaps are exactly why
-# the segment-splitting extra-processing path is needed. Rather than maintain
-# two lists that could silently drift apart, this is now derived directly from
-# ARRHYTHMIA_EXCLUSION_WINDOWS. Confirm this equivalence is intentional (i.e.
-# "needs extra processing" and "has arrhythmia exclusions" are meant to always
-# be the same set) -- if there's ever a phase that needs one but not the other,
-# this derivation would be wrong and they'd need to go back to being separate.
-PHASES_REQUIRING_EXTRA_PROCESSING = list(ARRHYTHMIA_EXCLUSION_WINDOWS.keys())
+# (lvedp_finetuning=True path in legacy pipeline()).
+#
+# CORRECTED: this was previously DERIVED from ARRHYTHMIA_EXCLUSION_WINDOWS.keys(),
+# on the assumption that "needs extra processing" and "has an arrhythmia
+# exclusion window" are the same set. Confirmed WRONG by checking process.py's
+# actual pipeline() function directly -- the real hardcoded list has two
+# additional entries with no arrhythmia exclusion window defined at all:
+# "221_Baseline" and "203_Washout_1" (both COARSE labels, used only by
+# flex_combined_phase_data for continuous-trajectory processing -- neither
+# ever matches an entry in ANIMAL_PHASES, so this correction does not affect
+# any already-generated fine-phase catheter_summary.pkl data).
+#
+# Now the verbatim legacy list, not derived from anything else.
+PHASES_REQUIRING_EXTRA_PROCESSING = [
+    "203_Nitro_high_P3", "203_Nitro_low_P3", "202_Phen_0_P3", "202_Washout_1_P3",
+    "221_Baseline", "203_Washout_1",
+]

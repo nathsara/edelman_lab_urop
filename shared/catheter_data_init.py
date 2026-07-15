@@ -392,3 +392,121 @@ def _filter_single_series(start, end, series, timestamps):
     filtered = [(t, v) for t, v in zip(timestamps, series) if start <= t <= end]
     time_data, series_data = zip(*filtered)
     return list(time_data), list(series_data)
+
+
+# ── Coarse (whole-drug-state) extraction, for continuous-trajectory data ────
+# ADDED for Stage 2 (continuous-time drug-effect trajectory). Distinct from
+# everything above: instead of the fine per-phase (P-level x dose) windows
+# in ANIMAL_PHASES, this slices ONE continuous window per whole drug state
+# (e.g. "202_Nitro" spans both low AND high dose sub-periods as a single
+# unbroken block -- confirmed via a legacy dosage-increase axvline sitting
+# mid-trace in graphing.py, and via process.flex_combined_phase_data being
+# called with coarse labels like "202_Nitro" in gen_map_pp_data.py's
+# commented-out __main__).
+#
+# Timestamps come from data/raw/drug_start_end_times.csv (columns Subject,
+# Phase, Start, End) -- REAL recorded protocol timestamps, not derived by
+# assuming contiguity between fine sub-phases. Scope is restricted to
+# Nitro/Phen/Dobu by default (Stage 2's confirmed scope; Baseline is not
+# reprocessed here at all since the existing fine-phase Baseline_0_P6 row in
+# {animal_id}_catheter_summary.pkl already provides the needed baseline
+# reference; Washout and Esmo are out of scope per user decision).
+#
+# Reuses the ALREADY-EXTRACTED full-animal raw_hd_data_{animal_id}.pkl /
+# raw_aop_data_{animal_id}.pkl pickles (from create_data_df / create_aop_data_df)
+# rather than re-reading the VBU CSVs a third time -- just re-sliced with a
+# different set of timestamps.
+
+COARSE_DRUGS = ("Nitro", "Phen", "Dobu")
+
+
+def _timestamps_from_drug_csv(drug_start_end_csv, animal_id, drugs=COARSE_DRUGS):
+    """
+    Reads data/raw/drug_start_end_times.csv and returns (start_times, end_times,
+    labels) for one animal, restricted to `drugs`, in the same
+    (start_times, end_times, labels) shape timestamps_from_animal() returns --
+    so the same filtering logic downstream works for both.
+    """
+    drug_start_end_csv = Path(drug_start_end_csv)
+    df = pd.read_csv(drug_start_end_csv)
+    df = df[(df["Subject"].astype(str) == str(animal_id)) & (df["Phase"].isin(drugs))]
+    if df.empty:
+        raise ValueError(
+            f"No rows found in {drug_start_end_csv} for Subject={animal_id!r}, "
+            f"Phase in {drugs}."
+        )
+
+    start_times = [datetime.strptime(s, "%H:%M:%S").time() for s in df["Start"]]
+    end_times = [datetime.strptime(s, "%H:%M:%S").time() for s in df["End"]]
+    labels = list(df["Phase"])  # e.g. "Nitro" -- coarse, no P-level/dose suffix
+    return start_times, end_times, labels
+
+
+def create_coarse_phase_data(drug_start_end_csv, raw_hd_data_pickle, animal_id, output_dir, drugs=COARSE_DRUGS):
+    """
+    Slices the already-extracted full-animal raw ECG/LVP data (from
+    create_data_df) into one coarse whole-drug-state ECG file and one LVP
+    file per drug in `drugs`, using REAL recorded Start/End timestamps from
+    drug_start_end_times.csv -- not derived from the fine per-phase windows.
+
+    Output filenames: {animal_id}_{drug}_ecg_raw.pkl / {animal_id}_{drug}_lvp_raw.pkl
+    (e.g. "202_Nitro_ecg_raw.pkl") -- distinct from fine-phase filenames
+    (which always have a _{dose}_{P} suffix), so both can safely live in the
+    same raw_phase_data/{animal_id}/ directory with no collision.
+
+    Parameters
+    ----------
+    drug_start_end_csv : str or Path
+        Path to data/raw/drug_start_end_times.csv.
+    raw_hd_data_pickle : str or Path
+        Path to the raw_hd_data_{animal_id}.pkl produced by create_data_df.
+    animal_id : str
+    output_dir : str or Path
+    drugs : tuple of str
+        Which drug states to extract. Default ("Nitro", "Phen", "Dobu") --
+        Stage 2's confirmed scope.
+    """
+    raw_hd_data_pickle = Path(raw_hd_data_pickle)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    data = pd.read_pickle(raw_hd_data_pickle)
+    timestamps, lvp, ecg = split_into_columns(data)
+    timestamps = timestamps.apply(lambda x: datetime.strptime(x, "%Y%m%d %H:%M:%S.%f").time())
+
+    start_times, end_times, labels = _timestamps_from_drug_csv(drug_start_end_csv, animal_id, drugs)
+
+    for start, end, drug in zip(start_times, end_times, labels):
+        label = f"{animal_id}_{drug}"
+        time_data, lvp_data, ecg_data = filter_data(start, end, lvp, timestamps, ecg)
+
+        lvp_df = pd.DataFrame({"time": time_data, "lvp": lvp_data})
+        ecg_df = pd.DataFrame({"time": time_data, "ecg": ecg_data})
+
+        lvp_df.to_pickle(output_dir / f"{label}_lvp_raw.pkl")
+        ecg_df.to_pickle(output_dir / f"{label}_ecg_raw.pkl")
+
+
+def create_coarse_aop_phase_data(drug_start_end_csv, raw_aop_data_pickle, animal_id, output_dir, drugs=COARSE_DRUGS):
+    """
+    AOP equivalent of create_coarse_phase_data() -- slices the already-
+    extracted full-animal raw_aop_data_{animal_id}.pkl into one coarse
+    {animal_id}_{drug}_aop_raw.pkl per drug in `drugs`, using the same real
+    recorded Start/End timestamps.
+    """
+    raw_aop_data_pickle = Path(raw_aop_data_pickle)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    data = pd.read_pickle(raw_aop_data_pickle)
+    timestamps, aop = data["RTlog_Timestamp"], data["AOP"]
+    timestamps = timestamps.apply(lambda x: datetime.strptime(x, "%Y%m%d %H:%M:%S.%f").time())
+
+    start_times, end_times, labels = _timestamps_from_drug_csv(drug_start_end_csv, animal_id, drugs)
+
+    for start, end, drug in zip(start_times, end_times, labels):
+        label = f"{animal_id}_{drug}"
+        time_data, aop_data = _filter_single_series(start, end, aop, timestamps)
+
+        aop_df = pd.DataFrame({"time": time_data, "aop": aop_data})
+        aop_df.to_pickle(output_dir / f"{label}_aop_raw.pkl")

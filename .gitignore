@@ -8,3 +8,4 @@ scratch_output/
 data/processed/catheter_derived/raw_phase_data/
 data/processed/catheter_derived/per_beat_data/
 __pycache__/
+data/processed/ct_drug_effect/
