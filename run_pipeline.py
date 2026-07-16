@@ -29,8 +29,20 @@ from shared.catheter_data_init import (
 )
 from shared.catheter_data_processing import combined_phase_data
 from shared.significance_testing import run_p3_p6_test, run_washout_test, Tee
+from shared.drug_dose_normalization import normalize_all_dose_columns
 from ct_drug_effect_analysis.process import process_coarse_phase
 import pandas as pd
+
+# Non-interactive backend -- TEMPORARY, per user instruction: plotting code
+# still runs to completion (figures get built in memory) but plt.show()
+# becomes a silent no-op instead of popping up a window. Must be set before
+# `import plots` (which imports matplotlib.pyplot internally) -- matplotlib's
+# backend has to be chosen before pyplot is first used. Deliberately doesn't
+# touch plots.py itself -- same "don't change visual code" constraint as
+# before; this is the module-level equivalent of not rendering at all,
+# rather than modifying the functions that build the figures.
+import matplotlib
+matplotlib.use("Agg")
 import plots
 
 # Catheter-derived pipeline scope: normal cohort ONLY. Baseline cohort is out
@@ -424,6 +436,23 @@ def main(repo_root, figures_dir, force_catheter=False):
     print("STAGE 0f: Continuous-time drug-effect trajectory data")
     print("=" * 60)
     _generate_ct_drug_effect_data(repo_root=repo_root, force=force_catheter)
+
+    # ── Drug dose normalization ────────────────────────────────────────────
+    # Runs BEFORE any plotting stage, per user instruction -- overwrites the
+    # `dose` column in every already-generated summary pickle that has one
+    # (catheter- and Impella-derived, normal cohort only), replacing the
+    # categorical low/high/0 label with a continuous 0-1 value: per-drug
+    # min-max normalized cumulative dose exposure. Always runs fresh
+    # (naturally idempotent, safe to re-run) -- no skip-if-exists, this is
+    # fast and deterministic from the source CSV. Placed here (after Stage
+    # 0f's data generation, before Stage 0g's plotting) so any plotting code
+    # -- present or future -- that wants to use the normalized dose column
+    # (e.g. color-coding by dose intensity) sees the final value, not the
+    # original categorical label.
+    print("=" * 60)
+    print("Drug dose normalization (overwriting `dose` columns)")
+    print("=" * 60)
+    normalize_all_dose_columns(repo_root=repo_root)
 
     # ── Stage 0g: Catheter-derived metric plotting ───────────────────────────
     print("=" * 60)
