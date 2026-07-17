@@ -30,6 +30,7 @@ from shared.catheter_data_init import (
 from shared.catheter_data_processing import combined_phase_data
 from shared.significance_testing import run_p3_p6_test, run_washout_test, Tee
 from shared.drug_dose_normalization import normalize_all_dose_columns
+from shared.percent_change_processing import generate_all_percent_change_files
 from ct_drug_effect_analysis.process import process_coarse_phase
 import pandas as pd
 
@@ -453,6 +454,16 @@ def main(repo_root, figures_dir, force_catheter=False):
     print("Drug dose normalization (overwriting `dose` columns)")
     print("=" * 60)
     normalize_all_dose_columns(repo_root=repo_root)
+
+    # ── Percent-change summary files ──────────────────────────────────────────
+    # Runs AFTER drug dose normalization (so the carried-through `dose` column
+    # reflects the normalized 0-1 value, not the original categorical label),
+    # BEFORE any plotting stage (figures will use this data, not raw values).
+    # New files, does not overwrite the summary pickles it reads from.
+    print("=" * 60)
+    print("Percent-change summary files (catheter- and Impella-derived)")
+    print("=" * 60)
+    generate_all_percent_change_files(repo_root=repo_root)
 
     # ── Stage 0g: Catheter-derived metric plotting ───────────────────────────
     print("=" * 60)
