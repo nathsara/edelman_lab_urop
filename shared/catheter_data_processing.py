@@ -627,6 +627,17 @@ def _pipeline_segment(ecg_segment, lvp_segment):
 # ── Low-level signal-processing helpers (all preserved exactly from legacy) ─
 
 def _calc_deriv_lvp(lvp_values, time_values):
+    # DEFENSIVE GUARD (last-resort safety net): the real fix for zero time-
+    # differences is deduplicating exact-duplicate timestamps upstream, in
+    # catheter_data_init.create_data_df/create_aop_data_df -- this should
+    # already prevent difft==0 from ever reaching here. This guard exists
+    # in case some other path (not yet identified) produces one anyway,
+    # since a crash mid-pipeline is far more costly than a single
+    # assumed-zero derivative point. Appends 0.0 (assume no instantaneous
+    # change) rather than skipping -- skipping would shift every subsequent
+    # index and break the positional alignment downstream code depends on
+    # (dpdt[i] must correspond to the interval between time_values[i] and
+    # time_values[i+1], exactly len(time_values)-1 entries).
     x = list(lvp_values)
     dxdt = []
     for i in range(len(x) - 1):
@@ -634,7 +645,10 @@ def _calc_deriv_lvp(lvp_values, time_values):
         dt1 = datetime.combine(datetime.today(), time_values[i + 1])
         dt2 = datetime.combine(datetime.today(), time_values[i])
         difft = (dt1 - dt2).total_seconds() * 1000
-        dxdt.append(diffx / difft)
+        if difft == 0:
+            dxdt.append(0.0)
+        else:
+            dxdt.append(diffx / difft)
     return dxdt
 
 

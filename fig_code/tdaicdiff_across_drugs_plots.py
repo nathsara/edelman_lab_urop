@@ -20,10 +20,16 @@ per drug (implying P6+P3 merged into one point per dose level). This
 script instead plots EVERY fine phase position separately (P6 and P3 as
 distinct points, same color/gradient -- no P-level color distinction, per
 user's "no P-level distinction in any plot", but not merged into fewer
-points either). Chosen because the sketch was explicitly described as
-"a little rough" and merging P6+P3 requires guessing a specific pairing
-rule not confirmed with the user. Easy to change to the merged version if
-this isn't what's wanted -- flag it and I'll adjust.
+points either).
+
+BUG FIX (confirmed, this revision): washout-occurrence counting previously
+incremented on EVERY row where med=="Washout" -- but each washout
+occurrence is actually TWO rows (P6 and P3), so this split the first real
+washout into "Washout_1"/"Washout_2" and silently dropped the real second
+washout entirely (miscounted past the <=2 cutoff). Fixed: only increments
+when a NEW washout block starts (previous row wasn't also "Washout"), so
+both rows of one washout occurrence share the same tag. Verified with a
+controlled test matching real ANIMAL_PHASES structure before shipping.
 
 Color: Baseline=black, Washout=gray (no gradient), drug phases=gradient
 by each point's own normalized dose value (continuous, not binary
@@ -50,7 +56,7 @@ IMPELLA_DIR = REPO_ROOT / "data" / "processed" / "impella_derived" / "summary_da
 
 ANIMAL_IDS = ["202", "203", "205", "221"]
 GROUP_ORDER = ["Baseline", "Nitro", "Washout_1", "Phen", "Washout_2", "Dobu"]
-GROUP_LABELS = ["Baseline", "Nitroprusside", "Washout 1", "Phenylephrine", "Washout 2", "Dobutamine"]
+GROUP_LABELS = ["Baseline", "Nitroprusside", "Washout", "Phenylephrine", "Washout", "Dobutamine"]
 
 
 def _load_and_tag(animal_id):
@@ -61,19 +67,23 @@ def _load_and_tag(animal_id):
     df = pd.read_pickle(path).sort_values("phase_number").reset_index(drop=True)
     df["diff_pctchange"] = df["TD_pctchange_mean"] - df["AIC_pctchange_mean"]
 
-    # Tag each row with its group (1st or 2nd occurrence of Washout gets
-    # Washout_1/Washout_2; anything after the 2nd washout -- i.e. Esmo, or
-    # a 3rd washout -- gets tagged None and excluded).
+    # Tag each row with its group. Washout occurrences are identified by
+    # CONTIGUOUS BLOCKS of med=="Washout" rows -- the counter only advances
+    # when a new block starts (previous row wasn't also Washout), so both
+    # rows (P6 and P3) of one washout occurrence share the same tag.
     washout_count = 0
     groups = []
+    prev_med = None
     for med in df["med"]:
         if med == "Washout":
-            washout_count += 1
+            if prev_med != "Washout":
+                washout_count += 1
             groups.append(f"Washout_{washout_count}" if washout_count <= 2 else None)
         elif med in ("Baseline", "Nitro", "Phen", "Dobu"):
             groups.append(med)
         else:  # Esmo or anything else
             groups.append(None)
+        prev_med = med
     df["group"] = groups
     return df[df["group"].notna()]
 

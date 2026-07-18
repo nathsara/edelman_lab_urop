@@ -15,6 +15,15 @@ phase position separately (P6 and P3 as distinct points, not merged into
 one point per dose level) -- see that script's docstring for the full
 reasoning.
 
+BUG FIX (confirmed, this revision): washout-occurrence counting previously
+incremented on EVERY row where med=="Washout" -- but each washout
+occurrence is actually TWO rows (P6 and P3), so this split the first real
+washout into "Washout_1"/"Washout_2" and silently dropped the real second
+washout entirely (miscounted past the <=2 cutoff). Fixed: only increments
+when a NEW washout block starts (previous row wasn't also "Washout"), so
+both rows of one washout occurrence share the same tag. Verified with a
+controlled test matching real ANIMAL_PHASES structure before shipping.
+
 STANDALONE test script: run directly, figures pop up on screen one at a
 time (swap to savefig-only once approved). NOT wired into run_pipeline.py
 yet.
@@ -56,16 +65,25 @@ def _load_and_tag(animal_id):
         return None
     df = pd.read_pickle(path).sort_values("phase_number").reset_index(drop=True)
 
+    # Tag each row with its group. Washout occurrences are identified by
+    # CONTIGUOUS BLOCKS of med=="Washout" rows -- the counter only advances
+    # when a new block starts (previous row wasn't also Washout), so both
+    # rows (P6 and P3) of one washout occurrence share the same tag. This
+    # is robust regardless of how many rows a given washout block actually
+    # has (normally 2, but doesn't assume exactly 2).
     washout_count = 0
     groups = []
+    prev_med = None
     for med in df["med"]:
         if med == "Washout":
-            washout_count += 1
+            if prev_med != "Washout":
+                washout_count += 1
             groups.append(f"Washout_{washout_count}" if washout_count <= 2 else None)
         elif med in ("Baseline", "Nitro", "Phen", "Dobu"):
             groups.append(med)
         else:
             groups.append(None)
+        prev_med = med
     df["group"] = groups
     return df[df["group"].notna()]
 

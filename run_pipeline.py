@@ -33,36 +33,18 @@ from shared.drug_dose_normalization import normalize_all_dose_columns
 from shared.percent_change_processing import generate_all_percent_change_files
 from ct_drug_effect_analysis.process import process_coarse_phase
 import pandas as pd
+import importlib.util
 
-# Non-interactive backend -- TEMPORARY, per user instruction: plotting code
-# still runs to completion (figures get built in memory) but plt.show()
-# becomes a silent no-op instead of popping up a window. Must be set before
-# `import plots` (which imports matplotlib.pyplot internally) -- matplotlib's
-# backend has to be chosen before pyplot is first used. Deliberately doesn't
-# touch plots.py itself -- same "don't change visual code" constraint as
-# before; this is the module-level equivalent of not rendering at all,
-# rather than modifying the functions that build the figures.
+# Non-interactive backend -- figures are saved directly (savefig), never
+# displayed, when generated from the pipeline. Must be set before any
+# matplotlib.pyplot import happens, including inside the fig_code scripts
+# imported below via importlib.
 import matplotlib
 matplotlib.use("Agg")
-import plots
 
 # Catheter-derived pipeline scope: normal cohort ONLY. Baseline cohort is out
 # of scope for catheter-derived metrics -- see PROJECT_DECISIONS.md.
 CATHETER_ANIMAL_IDS = ["202", "203", "205", "221"]
-
-# Metrics plotted in Stage 0d, matching PPT slides 27 (dp/dt max), 28
-# (dp/dt min), 29 (LVEDP). PP/MAP/HR-catheter have no legacy PPT figure to
-# compare against (see PROJECT_DECISIONS.md) -- plotted using the same
-# adapter with corrected units, for the user's own manual value comparison
-# against their previously-saved data rather than a visual PPT diff.
-CATHETER_PLOT_METRICS = [
-    ("dpdt_max", "dp/dt max", "mmHG/s"),
-    ("dpdt_min", "dp/dt min", "mmHG/s"),
-    ("lvedp", "lvedp", "mmHG/s"),
-    ("PP_catheter", "PP catheter", "mmHg"),
-    ("MAP_catheter", "MAP catheter", "mmHg"),
-    ("HR_catheter", "HR catheter", "bpm"),
-]
 
 
 def _generate_catheter_raw_data(repo_root, force=False):
@@ -280,44 +262,57 @@ def _run_catheter_significance_testing(repo_root):
     print(f"Catheter-derived significance testing results saved to: {output_path}")
 
 
-def _plot_catheter_summaries(repo_root):
+FIG_CODE_DIR = Path(__file__).resolve().parent / "fig_code"
+
+
+def _load_fig_code_module(filename):
     """
-    Stage 0d: plots each normal-cohort animal's dp/dt max, dp/dt min, and
-    LVEDP data, using the UNCHANGED legacy plot functions (via
-    plots.plot_catheter_summary).
-
-    This IS the real, permanent Stage 4 catheter-metrics plotting step, not a
-    disposable QA-only script -- it stays in the pipeline going forward. What
-    WILL change later, once the new data is confirmed correct against PPT
-    slides 27-29: the plotting code itself gets a real style pass (legend,
-    layout, grouping by metric across animals per the PPT slide-26 notes,
-    etc.), and output moves from on-screen windows to saved files under
-    figures/04_hemodynamic_metrics_vs_td_aic_diff/. None of that restyling
-    happens here -- this function just calls the legacy plot functions as-is
-    against the new pipeline's data.
-
-    Uses plt.show() (inherited unchanged from legacy plots.py) rather than
-    saving to disk -- this BLOCKS execution until each of the 12 figures
-    (4 animals x 3 metrics) is manually closed. Deliberate for now, so every
-    figure gets actively looked at during development. No skip-if-exists
-    logic either, since nothing is persisted to disk to check against -- this
-    stage just always (re)displays from whatever summary pickles exist.
+    Loads a fig_code/*.py script as a module via importlib -- each one is a
+    genuine standalone file (has its own `if __name__ == "__main__":` block
+    for manual testing), so it's loaded by file path rather than a normal
+    package import. This does not change that, just also allows the
+    pipeline to call the same functions directly.
     """
-    repo_root = Path(repo_root)
-    summary_dir = repo_root / "data" / "processed" / "catheter_derived" / "summary_data"
+    path = FIG_CODE_DIR / filename
+    spec = importlib.util.spec_from_file_location(filename[:-3].replace("-", "_"), path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    for animal_id in CATHETER_ANIMAL_IDS:
-        summary_path = summary_dir / f"{animal_id}_catheter_summary.pkl"
-        if not summary_path.exists():
-            raise FileNotFoundError(
-                f"No catheter summary found for animal {animal_id} at {summary_path}. "
-                f"Stage 0c should have produced this -- run the pipeline from the start."
-            )
-        summary_df = pd.read_pickle(summary_path)
 
-        for metric, metric_label, ylabel in CATHETER_PLOT_METRICS:
-            print(f"Plotting {animal_id} — {metric_label}...")
-            plots.plot_catheter_summary(summary_df, animal_id, metric, metric_label, ylabel=ylabel)
+def _generate_all_figures(repo_root):
+    """
+    Stage 0g: generates every final figure via the fig_code/*.py scripts --
+    replaces the old legacy-plots.py-based placeholder step entirely. Each
+    script saves its own output (save=True) rather than displaying --
+    nothing here blocks waiting for a window to be closed.
+
+    HALTS on any error -- consistent with the rest of this pipeline.
+    """
+    print("  -> Baseline cohort analysis...")
+    m = _load_fig_code_module("baseline_plots.py")
+    m.make_baseline_analysis_figure(save=True)
+
+    print("  -> Continuous-time drug effect trajectories...")
+    m = _load_fig_code_module("ct_drug_effect_plots.py")
+    m.make_ct_drug_effect_figure(save=True)
+
+    print("  -> TD-AIC difference across drugs...")
+    m = _load_fig_code_module("tdaicdiff_across_drugs_plots.py")
+    m.make_tdaicdiff_across_drugs_figure(save=True)
+
+    print("  -> Bland-Altman (percent-change)...")
+    m = _load_fig_code_module("bland_altman_plots.py")
+    m.make_bland_altman_figure(save=True)
+
+    print("  -> Metrics vs drugs (raw values, x6)...")
+    m = _load_fig_code_module("metrics_vs_drugs_plots.py")
+    m.make_all_metrics_vs_drugs_figures(save=True)
+
+    print("  -> Diff(TD-AIC) vs metrics (6 single + 1 combined)...")
+    m = _load_fig_code_module("tdaicdiff_vs_metrics_plots.py")
+    m.make_single_metric_figures(save=True)
+    m.make_combined_figure(save=True)
 
 
 def _generate_coarse_raw_data(repo_root, force=False):
@@ -465,11 +460,11 @@ def main(repo_root, figures_dir, force_catheter=False):
     print("=" * 60)
     generate_all_percent_change_files(repo_root=repo_root)
 
-    # ── Stage 0g: Catheter-derived metric plotting ───────────────────────────
+    # ── Stage 0g: Final figures (fig_code/*.py) ──────────────────────────────
     print("=" * 60)
-    print("STAGE 0g: Catheter-derived metric plotting — close each figure to continue")
+    print("STAGE 0g: Generating final figures")
     print("=" * 60)
-    _plot_catheter_summaries(repo_root=repo_root)
+    _generate_all_figures(repo_root=repo_root)
 
     # ── Stage 1: Baseline analysis ────────────────────────────────────────────
     # TODO: uncomment once written

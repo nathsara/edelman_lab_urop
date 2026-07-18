@@ -18,12 +18,12 @@ Normalization: each P-level normalized against its own baseline mean
      HR_catheter: t=+nan, p=nan (P3 n=4, P6 n=4)
 
 --- Nitro ---
-        dpdt_max: t=-0.076, p=0.9407 (P3 n=8, P6 n=8)
-        dpdt_min: t=-0.342, p=0.7377 (P3 n=8, P6 n=8)
-           lvedp: t=-0.097, p=0.9245 (P3 n=8, P6 n=8)
-     PP_catheter: t=-0.234, p=0.8182 (P3 n=8, P6 n=8)
-    MAP_catheter: t=-0.205, p=0.8409 (P3 n=8, P6 n=8)
-     HR_catheter: t=+0.242, p=0.8148 (P3 n=8, P6 n=8)
+        dpdt_max: t=-0.092, p=0.9284 (P3 n=8, P6 n=8)
+        dpdt_min: t=-0.344, p=0.7360 (P3 n=8, P6 n=8)
+           lvedp: t=-0.098, p=0.9231 (P3 n=8, P6 n=8)
+     PP_catheter: t=-0.236, p=0.8171 (P3 n=8, P6 n=8)
+    MAP_catheter: t=-0.205, p=0.8403 (P3 n=8, P6 n=8)
+     HR_catheter: t=+0.930, p=0.3698 (P3 n=8, P6 n=8)
 
 --- Phen ---
         dpdt_max: t=+0.447, p=0.6633 (P3 n=7, P6 n=7)

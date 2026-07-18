@@ -204,6 +204,66 @@ def create_data_df(vbu_lvv_folder, animal_id, output_dir):
     # same order); this is a pure efficiency fix, not a behavior change.
     raw_hd_data = pd.concat(file_frames, ignore_index=True)
 
+    # CRITICAL FIX (confirmed real bug, not a hypothesis): concatenation
+    # above was previously left in "sorted filename order" (per-file, via
+    # sorted(vbu_lvv_folder.glob("*.csv")) at the top of this function) --
+    # filename order is NOT guaranteed to match chronological order. This
+    # was confirmed to produce non-monotonic timestamps in practice (found
+    # via diagnose_ct_jump.py against real data: physically impossible
+    # heart-rate values, including NEGATIVE bpm and 15000+ bpm, which only
+    # occur when two "consecutive" R-peak timestamps are actually out of
+    # chronological order -- 60/rp_diff with rp_diff near-zero or negative).
+    # Fine phases (a few minutes) rarely span a file-boundary transition, so
+    # this was invisible until the new continuous coarse windows (30-70+
+    # minutes, crossing many file boundaries) started surfacing it.
+    #
+    # Fix: sort by the ACTUAL parsed timestamp, not filename order. Parses
+    # into a temporary datetime column for correct chronological sorting
+    # (rather than trusting the raw string's lexicographic order, which
+    # would only be safe if the source format is perfectly zero-padded --
+    # not verified, so not assumed), then drops the helper column --
+    # RTlog_Timestamp itself is left as the original string, unchanged,
+    # so every downstream consumer (which parses it themselves) needs no
+    # changes.
+    _sort_key = pd.to_datetime(raw_hd_data["RTlog_Timestamp"], format="%Y%m%d %H:%M:%S.%f")
+    was_already_sorted = _sort_key.is_monotonic_increasing
+    raw_hd_data = raw_hd_data.assign(_sort_key=_sort_key).sort_values("_sort_key").reset_index(drop=True)
+    if not was_already_sorted:
+        print(f"    [{animal_id}] WARNING: raw data was NOT in chronological order by filename "
+              f"-- re-sorted by actual timestamp. This animal's data was affected by the "
+              f"non-monotonic-timestamp bug.")
+
+    # SECOND BUG surfaced by the sort fix above: exact-duplicate timestamps
+    # (down to the microsecond) exist in some raw data -- e.g. from
+    # overlapping time ranges between two source files. Before sorting,
+    # duplicate rows were scattered through the data in filename order and
+    # rarely landed adjacent to each other, so a zero time-difference
+    # between "consecutive" rows almost never occurred. After sorting
+    # correctly, true duplicates land next to each other -- and
+    # _calc_deriv_lvp's dp/dt = diff(value)/diff(time) divides by zero.
+    #
+    # Fix: drop duplicate timestamps, keeping the first occurrence. If
+    # duplicate timestamps have DIFFERING LVP/ECG values (a genuine data
+    # conflict, not just a harmless re-logged duplicate), this is flagged
+    # loudly rather than silently resolved -- worth real investigation
+    # later, but not something to block an urgent run over right now.
+    dup_mask = raw_hd_data["_sort_key"].duplicated(keep=False)
+    n_dup_timestamps = dup_mask.sum()
+    if n_dup_timestamps > 0:
+        dup_rows = raw_hd_data[raw_hd_data["_sort_key"].duplicated(keep=False)]
+        conflicting = dup_rows.groupby("_sort_key")[["LVP", "Ext_ECG"]].nunique()
+        n_conflicting = (conflicting.max(axis=1) > 1).sum()
+        print(f"    [{animal_id}] WARNING: {n_dup_timestamps} rows had exact-duplicate timestamps "
+              f"-- keeping first occurrence of each, dropping the rest.")
+        if n_conflicting > 0:
+            print(f"    [{animal_id}] WARNING: {n_conflicting} of those duplicate timestamps had "
+                  f"DIFFERING LVP/ECG values between the duplicates (not just harmless re-logged "
+                  f"copies) -- kept the first occurrence arbitrarily. Worth investigating which "
+                  f"source file/value is correct if this matters for final results.")
+        raw_hd_data = raw_hd_data.drop_duplicates(subset="_sort_key", keep="first").reset_index(drop=True)
+
+    raw_hd_data = raw_hd_data.drop(columns="_sort_key")
+
     output_path = output_dir / f"raw_hd_data_{animal_id}.pkl"
     raw_hd_data.to_pickle(output_path)
     return raw_hd_data
@@ -341,6 +401,32 @@ def create_aop_data_df(vbu_lvv_folder, animal_id, output_dir):
         file_frames.append(file_df)
 
     raw_aop_data = pd.concat(file_frames, ignore_index=True)
+
+    # Same fix as create_data_df -- see that function's comment for full
+    # explanation. Sort by actual parsed timestamp, not filename order.
+    _sort_key = pd.to_datetime(raw_aop_data["RTlog_Timestamp"], format="%Y%m%d %H:%M:%S.%f")
+    was_already_sorted = _sort_key.is_monotonic_increasing
+    raw_aop_data = raw_aop_data.assign(_sort_key=_sort_key).sort_values("_sort_key").reset_index(drop=True)
+    if not was_already_sorted:
+        print(f"    [{animal_id}] WARNING: raw AOP data was NOT in chronological order by filename "
+              f"-- re-sorted by actual timestamp.")
+
+    # Same duplicate-timestamp fix as create_data_df -- see that function's
+    # comment for full explanation.
+    dup_mask = raw_aop_data["_sort_key"].duplicated(keep=False)
+    n_dup_timestamps = dup_mask.sum()
+    if n_dup_timestamps > 0:
+        dup_rows = raw_aop_data[dup_mask]
+        conflicting = dup_rows.groupby("_sort_key")["AOP"].nunique()
+        n_conflicting = (conflicting > 1).sum()
+        print(f"    [{animal_id}] WARNING: {n_dup_timestamps} AOP rows had exact-duplicate timestamps "
+              f"-- keeping first occurrence of each, dropping the rest.")
+        if n_conflicting > 0:
+            print(f"    [{animal_id}] WARNING: {n_conflicting} of those duplicate timestamps had "
+                  f"DIFFERING AOP values -- kept the first occurrence arbitrarily.")
+        raw_aop_data = raw_aop_data.drop_duplicates(subset="_sort_key", keep="first").reset_index(drop=True)
+
+    raw_aop_data = raw_aop_data.drop(columns="_sort_key")
 
     output_path = output_dir / f"raw_aop_data_{animal_id}.pkl"
     raw_aop_data.to_pickle(output_path)
