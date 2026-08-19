@@ -68,9 +68,31 @@ def _elapsed_minutes(ma_df):
 
 def _cross_animal_average(animal_id_list, drug, metric):
     """
-    Loads {animal_id}_{drug}_{metric}_MA.pkl for each animal, truncates to
-    the shortest series, and averages by row position (same convention as
-    sanity_check_ct_drug_effect.py / legacy graphing.py).
+    Loads {animal_id}_{drug}_{metric}_MA.pkl for each animal and averages
+    by row position -- EXPANDING-POOL method (changed from the original
+    truncate-to-shortest method):
+
+    Extends to the length of the LONGEST animal's series. At each row
+    position, averages over whichever animals still have data there (e.g.
+    if 202 runs out at position 1000 but 203/205/221 continue to 1500,
+    positions 1000-1500 average (203+205+221)/3, not requiring all 4). As
+    each animal runs out in turn, the pool shrinks: 4 -> 3 -> 2 -> 1. Mean
+    only, no error band. Verified against ct_drug_effect_expanding_avg_
+    sanity_check.py's hand-checked test before being promoted here.
+
+    ALSO FIXES A REAL BUG in the old method, not just a design change:
+    the old code set `x_trim = xs[0][:min_len]` -- the x-axis (time) values
+    were hardcoded to animal_id_list[0]'s (202's) own timestamps,
+    regardless of which animal was ACTUALLY shortest. Since different
+    metrics have very different point-densities (e.g. AOP-derived MAP/PP
+    peak-detection produces a different points-per-minute rate than ECG-
+    derived HR), this could badly mislabel the time axis -- confirmed via
+    real MAP data where the resulting average line was visibly much
+    SHORTER than even the shortest individual animal trace, because it was
+    using 202's (denser) time-per-point spacing to label a point count
+    that came from a different, sparser animal. The new method sources the
+    x-axis from whichever animal is dynamically found to be longest, not a
+    hardcoded index, so this can't happen.
     """
     ys, xs = [], []
     for animal_id in animal_id_list:
@@ -80,16 +102,22 @@ def _cross_animal_average(animal_id_list, drug, metric):
             continue
         ma_df = pd.read_pickle(path)
         xs.append(_elapsed_minutes(ma_df))
-        ys.append(ma_df["SMA"])
+        ys.append(list(ma_df["SMA"]))
 
     if not ys:
         return None, None
 
-    min_len = min(len(y) for y in ys)
-    ys_trim = [y.iloc[:min_len] for y in ys]
-    x_trim = xs[0][:min_len]
-    y_avg = sum(ys_trim) / len(ys_trim)
-    return x_trim, y_avg
+    lengths = [len(y) for y in ys]
+    max_len = max(lengths)
+    longest_idx = lengths.index(max_len)
+    x_full = xs[longest_idx][:max_len]
+
+    y_avg = []
+    for pos in range(max_len):
+        vals_at_pos = [y[pos] for y in ys if pos < len(y)]
+        y_avg.append(sum(vals_at_pos) / len(vals_at_pos))
+
+    return x_full, y_avg
 
 
 def make_ct_drug_effect_figure(save=False, output_dir=None):
