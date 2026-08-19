@@ -121,7 +121,7 @@ def merge_p3_p6(df, value_cols):
     return pd.DataFrame(merged_rows)
 
 
-def add_dose_gradient_legend(fig, ax=None, loc="lower left"):
+def add_dose_gradient_legend(fig, ax=None, loc="lower left", label_fontsize=11, tick_fontsize=10, title_fontsize=11):
     """
     Adds the small 'Normalized Drug Dosage 0->1' gradient legend shown in
     the notes for figs 3/5/6 -- one horizontal gradient bar per drug.
@@ -137,9 +137,9 @@ def add_dose_gradient_legend(fig, ax=None, loc="lower left"):
             frac = j / n_steps
             ax.add_patch(Rectangle((frac, y), 1 / n_steps, 0.8,
                                     color=dose_gradient_color(drug, frac), linewidth=0))
-        ax.text(1.05, y + 0.4, drug, va="center", fontsize=11)
-    ax.text(0, -0.4, "0", fontsize=10)
-    ax.text(1, -0.4, "1", fontsize=10)
-    ax.set_title("Normalized Drug Dosage", fontsize=11)
+        ax.text(1.05, y + 0.4, drug, va="center", fontsize=label_fontsize)
+    ax.text(0, -0.4, "0", fontsize=tick_fontsize)
+    ax.text(1, -0.4, "1", fontsize=tick_fontsize)
+    ax.set_title("Normalized Drug Dosage", fontsize=title_fontsize)
     ax.axis("off")
     return ax

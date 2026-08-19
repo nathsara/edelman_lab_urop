@@ -314,6 +314,14 @@ def _generate_all_figures(repo_root):
     m.make_single_metric_figures(save=True)
     m.make_combined_figure(save=True)
 
+    print("  -> Metrics vs drugs, P6/P3-averaged (x6)...")
+    m = _load_fig_code_module("metrics_vs_drugs_p_averaged_plots.py")
+    m.make_all_metrics_vs_drugs_averaged_figures(save=True)
+
+    print("  -> TD-AIC difference across drugs, P6/P3-averaged...")
+    m = _load_fig_code_module("tdaicdiff_across_drugs_p_averaged_plots.py")
+    m.make_tdaicdiff_across_drugs_averaged_figure(save=True)
+
 
 def _generate_coarse_raw_data(repo_root, force=False):
     """

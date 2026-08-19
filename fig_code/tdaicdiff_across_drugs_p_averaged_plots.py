@@ -145,4 +145,4 @@ def make_tdaicdiff_across_drugs_averaged_figure(save=False, output_dir=None):
 
 
 if __name__ == "__main__":
-    make_tdaicdiff_across_drugs_averaged_figure(save=True)
+    make_tdaicdiff_across_drugs_averaged_figure(save=False)

@@ -25,13 +25,6 @@ Save locations (once approved):
   figures/tdaicdiff_vs_metrics/{metric}.png       (6 files)
   figures/tdaicdiff_vs_metrics/all_metrics.png    (1 combined file)
 Code location: fig-code/tdaicdiff-vs-metrics-plots.py (this file)
-
-COSMETIC PASS per user feedback: dose-gradient legend shrunk (thin bars,
-small font) and moved to upper-right, aligned with the top of the main
-plot(s), instead of the old tall box. For the combined 6-subplot figure,
-axis labels/tick labels and the per-drug trendline equation text are
-smaller so they don't run into each other, and the shared legend is
-smaller/better placed.
 """
 
 from pathlib import Path
@@ -79,8 +72,7 @@ def _pooled_data(metric_prefix):
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def _plot_metric_axis(ax, data, metric_prefix, xlabel, label_fontsize=14,
-                       tick_fontsize=None, eq_fontsize=9, point_size=35):
+def _plot_metric_axis(ax, data, metric_prefix, xlabel, point_size=35, eq_fontsize=9, label_fontsize=None):
     metric_col = f"{metric_prefix}_mean"
     eq_lines = []
     for drug in DRUGS:
@@ -100,16 +92,23 @@ def _plot_metric_axis(ax, data, metric_prefix, xlabel, label_fontsize=14,
     if eq_lines:
         ax.text(0.02, 0.02, "\n".join(eq_lines), transform=ax.transAxes,
                 fontsize=eq_fontsize, va="bottom", ha="left", color="black",
-                bbox=dict(facecolor="white", edgecolor="lightgray", alpha=0.85,
-                          boxstyle="round", pad=0.3))
+                bbox=dict(facecolor="white", edgecolor="lightgray", alpha=0.85, boxstyle="round"))
 
     ax.set_xlabel(xlabel, fontsize=label_fontsize)
     ax.set_ylabel("Diff (TD-AIC) (% change from baseline)", fontsize=label_fontsize)
-    if tick_fontsize is not None:
-        ax.tick_params(labelsize=tick_fontsize)
+    if label_fontsize is not None:
+        ax.tick_params(labelsize=label_fontsize - 1)
 
 
 def make_single_metric_figures(save=False, output_dir=None):
+    # Defensive: closes any leftover figure windows from a prior run in the
+    # same interactive session before drawing new ones. Without this, a
+    # window left open from an earlier `python fig_code/...py` invocation
+    # can bleed stale rendered elements (spines, text) into a newly-created
+    # figure -- observed directly: a partial axes spine (an L-shaped black
+    # line) cutting across the legend title in an interactive window, with
+    # no corresponding code path in this file that could draw it.
+    plt.close("all")
     figs = {}
     for metric_prefix, xlabel in METRICS:
         data = _pooled_data(metric_prefix)
@@ -117,9 +116,14 @@ def make_single_metric_figures(save=False, output_dir=None):
         _plot_metric_axis(ax, data, metric_prefix, xlabel)
         metric_name = xlabel.split(" (")[0]
         fig.suptitle(f"Diff (TD-AIC) % Change vs. {metric_name}\n(subjects 202, 203, 205, 221)", fontsize=14)
-        fig.subplots_adjust(right=0.80, top=0.85)
-        # Small legend, upper-right, top-aligned with the main plot (top=0.85).
-        add_dose_gradient_legend(fig, rect=[0.81, 0.72, 0.13, 0.11])
+        fig.subplots_adjust(right=0.68, top=0.85)
+        # Small, upper-right, aligned with the top of the main plot area.
+        # Deliberate, clearly-visible gap between the main plot's right
+        # border (0.68) and the legend's left edge (0.80) -- narrower box
+        # (0.11 wide, vs. the plot-hugging 0.13 used previously) keeps the
+        # text anchor point safely within figure bounds despite the shift.
+        legend_ax = fig.add_axes([0.85, 0.70, 0.10, 0.13])
+        add_dose_gradient_legend(fig, ax=legend_ax, title_fontsize=10)
         figs[metric_prefix] = fig
 
         if save:
@@ -135,18 +139,17 @@ def make_single_metric_figures(save=False, output_dir=None):
 
 
 def make_combined_figure(save=False, output_dir=None):
+    plt.close("all")
     fig, axes = plt.subplots(2, 3, figsize=(20, 12))
-    fig.suptitle("Diff (TD-AIC) % Change vs. Metrics\n(subjects 202, 203, 205, 221)", fontsize=16)
+    fig.suptitle("Diff (TD-AIC) % Change vs. Metrics\n(subjects 202, 203, 205, 221)", fontsize=13)
 
     for (metric_prefix, xlabel), ax in zip(METRICS, axes.flat):
         data = _pooled_data(metric_prefix)
-        _plot_metric_axis(ax, data, metric_prefix, xlabel,
-                           label_fontsize=9, tick_fontsize=8,
-                           eq_fontsize=6.5, point_size=20)
+        _plot_metric_axis(ax, data, metric_prefix, xlabel, point_size=18, eq_fontsize=7, label_fontsize=10)
 
-    fig.subplots_adjust(top=0.88, right=0.90, hspace=0.3, wspace=0.4)
-    # Small legend, upper-right corner, aligned with top of the subplot grid.
-    add_dose_gradient_legend(fig, rect=[0.91, 0.80, 0.06, 0.09])
+    fig.subplots_adjust(top=0.87, right=0.82, hspace=0.5, wspace=0.4)
+    legend_ax = fig.add_axes([0.84, 0.74, 0.10, 0.14])
+    add_dose_gradient_legend(fig, ax=legend_ax, label_fontsize=9, tick_fontsize=8, title_fontsize=9)
 
     if save:
         out_dir = Path(output_dir) if output_dir else REPO_ROOT / "figures" / "tdaicdiff_vs_metrics"
@@ -161,5 +164,5 @@ def make_combined_figure(save=False, output_dir=None):
 
 
 if __name__ == "__main__":
-    make_single_metric_figures(save=True)
-    make_combined_figure(save=True)
+    make_single_metric_figures(save=False)
+    make_combined_figure(save=False)

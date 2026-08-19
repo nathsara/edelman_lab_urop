@@ -113,4 +113,4 @@ def make_baseline_analysis_figure(save=False, output_dir=None):
 
 
 if __name__ == "__main__":
-    make_baseline_analysis_figure(save=True)
+    make_baseline_analysis_figure(save=False)

@@ -104,4 +104,4 @@ def make_bland_altman_figure(save=False, output_dir=None):
 
 
 if __name__ == "__main__":
-    make_bland_altman_figure(save=True)
+    make_bland_altman_figure(save=False)

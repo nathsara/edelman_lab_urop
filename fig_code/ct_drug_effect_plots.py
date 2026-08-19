@@ -173,4 +173,4 @@ def make_ct_drug_effect_figure(save=False, output_dir=None):
 
 
 if __name__ == "__main__":
-    make_ct_drug_effect_figure(save=True)
+    make_ct_drug_effect_figure(save=False)

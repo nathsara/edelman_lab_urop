@@ -169,4 +169,4 @@ def make_all_metrics_vs_drugs_figures(save=False, output_dir=None):
 
 
 if __name__ == "__main__":
-    make_all_metrics_vs_drugs_figures(save=True)
+    make_all_metrics_vs_drugs_figures(save=False)
