@@ -16,6 +16,7 @@ Font: >=14pt everywhere, per notes guideline 1.
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
+import pandas as pd
 
 plt.rcParams.update({
     "font.size": 14,
@@ -67,36 +68,78 @@ def phase_color(med, normalized_dose):
     return dose_gradient_color(med, normalized_dose)
 
 
-def add_dose_gradient_legend(fig, ax=None, rect=None, bar_height=0.35,
-                              fontsize=8, title_fontsize=9):
+def merge_p3_p6(df, value_cols):
     """
-    Adds a compact 'Normalized Drug Dosage 0->1' gradient legend -- one
-    THIN horizontal gradient bar per drug (bars are deliberately thin so
-    the legend doesn't eat up plot space).
+    Merges P6+P3 rows into one averaged row per drug-dose occurrence (or per
+    Baseline/Washout occurrence, which have no dose split). Used for the
+    "averaged" figure versions, per user: P3 vs P6 showed no significant
+    difference (confirmed via run_p3_p6_test), so it's valid to average them
+    together rather than plot as separate points -- Nitro collapses from 4
+    points to 2, Baseline from 2 to 1, etc.
 
-    rect: [left, bottom, width, height] in figure coordinates for the
-    legend axes (only used if `ax` is not already provided by the caller).
-    Callers should pass a small rect (e.g. width ~0.12-0.16,
-    height ~0.08-0.12) and position it wherever it fits without
-    overlapping the main plot/other text.
+    Grouping key: (group, dose) -- P6 and P3 rows within the same drug
+    occurrence share the IDENTICAL normalized dose value (both came from the
+    same dose-log row via time-matching in drug_dose_normalization.py), so
+    grouping on dose directly identifies "same occurrence" without needing to
+    guess a P6/P3 pairing rule. NaN dose (Baseline, Washout -- no dose split)
+    is treated as one shared bucket per group tag, since there's only ever
+    one occurrence to merge in those cases.
+
+    Naturally handles asymmetric cases (e.g. animal 205's Dobu-high, which
+    has only a P6 row, no matching P3) -- a "group" of one row just averages
+    to itself, no special-casing needed.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must have 'group' and 'dose' columns (already tagged, e.g. via
+        _load_and_tag), sorted by phase_number so occurrence order (low dose
+        before high dose) is preserved.
+    value_cols : list of str
+        Columns to average within each merged occurrence.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per merged occurrence: 'group', 'dose' (mean, though
+        identical within the group by construction), plus averaged
+        value_cols. Order preserved (first-appearance order of each
+        (group, dose) key).
+    """
+    df = df.copy()
+    # Rounded to avoid two rows that SHOULD be identical (same source dose
+    # value) differing by float noise; NaN dose (Baseline/Washout) shares
+    # one bucket per group tag.
+    df["_dose_key"] = df["dose"].apply(lambda d: "NA" if pd.isna(d) else round(d, 8))
+
+    merged_rows = []
+    for (group_val, _dose_key), sub in df.groupby(["group", "_dose_key"], sort=False):
+        row = {"group": group_val, "dose": sub["dose"].mean()}
+        for col in value_cols:
+            row[col] = sub[col].mean()
+        merged_rows.append(row)
+    return pd.DataFrame(merged_rows)
+
+
+def add_dose_gradient_legend(fig, ax=None, loc="lower left"):
+    """
+    Adds the small 'Normalized Drug Dosage 0->1' gradient legend shown in
+    the notes for figs 3/5/6 -- one horizontal gradient bar per drug.
     """
     from matplotlib.patches import Rectangle
-    if ax is None:
-        rect = rect or [0.83, 0.03, 0.14, 0.09]
-        ax = fig.add_axes(rect)
+    ax = ax or fig.add_axes([0.15, 0.02, 0.2, 0.12])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, len(DRUG_BASE_COLOR))
-    n_steps = 30
+    n_steps = 40
     for i, drug in enumerate(DRUG_BASE_COLOR):
         y = len(DRUG_BASE_COLOR) - i - 1
-        y_bar = y + (1 - bar_height) / 2
         for j in range(n_steps):
             frac = j / n_steps
-            ax.add_patch(Rectangle((frac, y_bar), 1 / n_steps, bar_height,
+            ax.add_patch(Rectangle((frac, y), 1 / n_steps, 0.8,
                                     color=dose_gradient_color(drug, frac), linewidth=0))
-        ax.text(1.06, y + 0.5, drug, va="center", fontsize=fontsize)
-    ax.text(0, -0.35, "0", fontsize=fontsize - 1, ha="center")
-    ax.text(1, -0.35, "1", fontsize=fontsize - 1, ha="center")
-    ax.set_title("Norm. Dose", fontsize=title_fontsize, pad=2)
+        ax.text(1.05, y + 0.4, drug, va="center", fontsize=11)
+    ax.text(0, -0.4, "0", fontsize=10)
+    ax.text(1, -0.4, "1", fontsize=10)
+    ax.set_title("Normalized Drug Dosage", fontsize=11)
     ax.axis("off")
     return ax
