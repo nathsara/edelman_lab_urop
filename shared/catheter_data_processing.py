@@ -394,9 +394,34 @@ def process_phase_hemodynamics(label, raw_phase_dir, per_beat_dir=None):
     ECG+LVP, already extracted for the dp/dt/LVEDP pipeline -- no new raw
     signal needed for it.
 
+    CORRECTED (previously missing): applies the SAME two-round outlier
+    detection/removal as dp/dt max/min and LVEDP -- an earlier version of
+    this module deliberately did NOT apply this, reasoning that legacy
+    aop_processing.py's calc_hr/calc_pulse_pressure/calc_map never called
+    it internally. That reasoning was wrong: the original researcher
+    confirmed directly that two-round outlier detection WAS actually
+    performed on this data in their own workflow (evidenced by
+    "_cleaner"-suffixed legacy files for PP/MAP/HR, using the exact same
+    naming convention as the two-round-cleaned dp/dt/LVEDP files) -- it
+    just wasn't baked into aop_processing.py's own functions, and was
+    applied as a separate manual step instead. Confirmed via direct
+    comparison against a real legacy _cleaner file for 202's Dobu HR: the
+    uncleaned new-pipeline output matched the uncleaned legacy output
+    beat-for-beat (64 beats, 109.71428571428571 bpm, exact match to the
+    decimal), and the legacy _cleaner file for the same narrow window had
+    only 1 beat remaining -- consistent with a global (not local) 2-std
+    outlier filter correctly removing an entire transient block (e.g. a
+    drug-onset transient) that sits far from the rest of the session's
+    mean, not spurious per-beat noise.
+
+    Reuses the same _detect_outliers()/_remove_outliers() helpers already
+    used for dp/dt/LVEDP -- no new logic, same two-round pattern.
+
     per_beat_dir : str or Path, optional
-        If given, saves the final per-beat PP, MAP, and HR series (no
-        outlier removal applied to these -- see module docstring) as
+        If given, saves the FINAL (post-two-round-outlier-removal) per-beat
+        PP, MAP, and HR series -- not the intermediate half-baked versions,
+        matching the same "no _cleaned/_cleaner intermediate files on disk"
+        convention already used for dp/dt/LVEDP -- as
         {label}_pp_catheter.pkl / {label}_map_catheter.pkl /
         {label}_hr_catheter.pkl. If None (default), nothing extra is saved.
 
@@ -430,20 +455,43 @@ def process_phase_hemodynamics(label, raw_phase_dir, per_beat_dir=None):
     hr_df = _calc_hr(ecg_df, lvp_df, label)
     print(f"    [{label}] HR computed ({time.time()-_t0:.1f}s)")
 
+    # Two rounds of outlier detection/removal, same pattern as dp/dt/LVEDP.
+    # No intermediate _cleaned/_cleaner pickles written to disk -- only the
+    # final result is kept.
+    _t0 = time.time()
+    pp_outliers = _detect_outliers(pp_df["time"], pp_df["pulse_pressure"])
+    map_outliers = _detect_outliers(map_df["time"], map_df["map"])
+    hr_outliers = _detect_outliers(hr_df["time"], hr_df["heart_rate"])
+
+    pp_cleaned = _remove_outliers(pp_df, pp_outliers)
+    map_cleaned = _remove_outliers(map_df, map_outliers)
+    hr_cleaned = _remove_outliers(hr_df, hr_outliers)
+
+    pp_outliers2 = _detect_outliers(pp_cleaned["time"], pp_cleaned["pulse_pressure"])
+    map_outliers2 = _detect_outliers(map_cleaned["time"], map_cleaned["map"])
+    hr_outliers2 = _detect_outliers(hr_cleaned["time"], hr_cleaned["heart_rate"])
+
+    pp_final = _remove_outliers(pp_cleaned, pp_outliers2)
+    map_final = _remove_outliers(map_cleaned, map_outliers2)
+    hr_final = _remove_outliers(hr_cleaned, hr_outliers2)
+    print(f"    [{label}] PP/MAP/HR outlier removal done ({time.time()-_t0:.1f}s) -- "
+          f"PP {len(pp_df)}->{len(pp_final)}, MAP {len(map_df)}->{len(map_final)}, "
+          f"HR {len(hr_df)}->{len(hr_final)}")
+
     if per_beat_dir is not None:
         per_beat_dir = Path(per_beat_dir)
         per_beat_dir.mkdir(parents=True, exist_ok=True)
-        pp_df.to_pickle(per_beat_dir / f"{label}_pp_catheter.pkl")
-        map_df.to_pickle(per_beat_dir / f"{label}_map_catheter.pkl")
-        hr_df.to_pickle(per_beat_dir / f"{label}_hr_catheter.pkl")
+        pp_final.to_pickle(per_beat_dir / f"{label}_pp_catheter.pkl")
+        map_final.to_pickle(per_beat_dir / f"{label}_map_catheter.pkl")
+        hr_final.to_pickle(per_beat_dir / f"{label}_hr_catheter.pkl")
 
     return {
-        "PP_catheter_mean": pp_df["pulse_pressure"].mean(),
-        "PP_catheter_std": pp_df["pulse_pressure"].std(),
-        "MAP_catheter_mean": map_df["map"].mean(),
-        "MAP_catheter_std": map_df["map"].std(),
-        "HR_catheter_mean": hr_df["heart_rate"].mean(),
-        "HR_catheter_std": hr_df["heart_rate"].std(),
+        "PP_catheter_mean": pp_final["pulse_pressure"].mean(),
+        "PP_catheter_std": pp_final["pulse_pressure"].std(),
+        "MAP_catheter_mean": map_final["map"].mean(),
+        "MAP_catheter_std": map_final["map"].std(),
+        "HR_catheter_mean": hr_final["heart_rate"].mean(),
+        "HR_catheter_std": hr_final["heart_rate"].std(),
     }
 
 

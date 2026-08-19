@@ -21,25 +21,25 @@ Normalization: each P-level normalized against its own baseline mean
         dpdt_max: t=-0.092, p=0.9284 (P3 n=8, P6 n=8)
         dpdt_min: t=-0.344, p=0.7360 (P3 n=8, P6 n=8)
            lvedp: t=-0.098, p=0.9231 (P3 n=8, P6 n=8)
-     PP_catheter: t=-0.236, p=0.8171 (P3 n=8, P6 n=8)
-    MAP_catheter: t=-0.205, p=0.8403 (P3 n=8, P6 n=8)
-     HR_catheter: t=+0.930, p=0.3698 (P3 n=8, P6 n=8)
+     PP_catheter: t=-0.175, p=0.8633 (P3 n=8, P6 n=8)
+    MAP_catheter: t=-0.163, p=0.8727 (P3 n=8, P6 n=8)
+     HR_catheter: t=+0.998, p=0.3361 (P3 n=8, P6 n=8)
 
 --- Phen ---
         dpdt_max: t=+0.447, p=0.6633 (P3 n=7, P6 n=7)
         dpdt_min: t=-0.396, p=0.6990 (P3 n=7, P6 n=7)
            lvedp: t=-1.013, p=0.3310 (P3 n=7, P6 n=7)
-     PP_catheter: t=+1.506, p=0.1580 (P3 n=7, P6 n=7)
-    MAP_catheter: t=-0.637, p=0.5366 (P3 n=7, P6 n=7)
-     HR_catheter: t=+1.884, p=0.0845 (P3 n=7, P6 n=7)
+     PP_catheter: t=+1.476, p=0.1658 (P3 n=7, P6 n=7)
+    MAP_catheter: t=-0.617, p=0.5490 (P3 n=7, P6 n=7)
+     HR_catheter: t=+1.977, p=0.0740 (P3 n=7, P6 n=7)
 
 --- Dobu ---
         dpdt_max: t=-1.084, p=0.3082 (P3 n=5, P6 n=6)
         dpdt_min: t=-1.097, p=0.3028 (P3 n=5, P6 n=6)
            lvedp: t=-1.168, p=0.2900 (P3 n=5, P6 n=6)
-     PP_catheter: t=-1.135, p=0.2878 (P3 n=5, P6 n=6)
-    MAP_catheter: t=-1.258, p=0.2410 (P3 n=5, P6 n=6)
-     HR_catheter: t=+0.255, p=0.8047 (P3 n=5, P6 n=6)
+     PP_catheter: t=-1.119, p=0.2957 (P3 n=5, P6 n=6)
+    MAP_catheter: t=-1.281, p=0.2340 (P3 n=5, P6 n=6)
+     HR_catheter: t=+0.201, p=0.8452 (P3 n=5, P6 n=6)
 
 ======================================================================
 CONCLUSION: No significant P3 vs P6 differences found across any
@@ -61,17 +61,17 @@ Note: only Washout1 (post-Nitro) and Washout2 (post-Phen) tested.
         dpdt_max: mean pct change=-3.20%, t=-0.465, p=0.6734 (n=4)
         dpdt_min: mean pct change=-4.13%, t=-0.532, p=0.6318 (n=4)
            lvedp: mean pct change=+12.67%, t=+0.520, p=0.6387 (n=4)
-     PP_catheter: mean pct change=-6.62%, t=-2.280, p=0.1069 (n=4)
-    MAP_catheter: mean pct change=+1.98%, t=+0.237, p=0.8278 (n=4)
-     HR_catheter: mean pct change=+9.63%, t=+1.970, p=0.1435 (n=4)
+     PP_catheter: mean pct change=-6.19%, t=-1.976, p=0.1426 (n=4)
+    MAP_catheter: mean pct change=+1.83%, t=+0.221, p=0.8391 (n=4)
+     HR_catheter: mean pct change=+9.64%, t=+2.035, p=0.1347 (n=4)
 
 --- Washout2 (post-Phen) ---
         dpdt_max: mean pct change=+0.88%, t=+0.083, p=0.9393 (n=4)
         dpdt_min: mean pct change=-6.18%, t=-0.785, p=0.4897 (n=4)
            lvedp: mean pct change=+12.16%, t=+0.495, p=0.6547 (n=4)
-     PP_catheter: mean pct change=-2.86%, t=-1.463, p=0.2396 (n=4)
-    MAP_catheter: mean pct change=-1.71%, t=-0.217, p=0.8418 (n=4)
-     HR_catheter: mean pct change=+9.93%, t=+2.002, p=0.1390 (n=4)
+     PP_catheter: mean pct change=-2.62%, t=-1.281, p=0.2903 (n=4)
+    MAP_catheter: mean pct change=-1.95%, t=-0.245, p=0.8220 (n=4)
+     HR_catheter: mean pct change=+10.15%, t=+2.164, p=0.1192 (n=4)
 
 ======================================================================
 INTERPRETATION GUIDE:
